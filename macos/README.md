@@ -80,6 +80,11 @@ long selections at Unicode-safe boundaries and plays the returned MP3 segments
 in order. Only text explicitly requested for playback is sent to Google Cloud;
 generated audio is kept in memory for that playback.
 
+Flow uses Google's [`voices.list`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/voices/list)
+and [`text.synthesize`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize)
+REST methods. Google's [API key guidance](https://cloud.google.com/docs/authentication/api-keys-best-practices)
+explains key restrictions and rotation.
+
 ## v1 behavior
 
 - Captures selected text through macOS Accessibility before showing its popup.

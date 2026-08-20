@@ -64,8 +64,9 @@ web content.
 
 ## Azure Speech
 
-Azure is optional. In **Settings > Speech**, choose **Azure voice**, then enter either a Speech region
-(for example `westeurope`) or its HTTPS speech endpoint and a subscription key.
+Azure is optional. In **Settings > Speech**, choose **Azure voice**, then enter
+either a Speech region (for example `westeurope`) or its HTTPS speech endpoint
+and a subscription key.
 Flow stores the key in the Linux desktop keyring through Secret Service. The key
 is never written to Flow's settings file.
 
@@ -89,6 +90,11 @@ Google's synchronous API limits text input to 5,000 bytes, Flow splits long
 selections at Unicode-safe boundaries and plays the resulting MP3 segments in
 order. The temporary segments are deleted after playback or when playback is
 stopped.
+
+Flow uses Google's [`voices.list`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/voices/list)
+and [`text.synthesize`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize)
+REST methods. Google's [API key guidance](https://cloud.google.com/docs/authentication/api-keys-best-practices)
+explains key restrictions and rotation.
 
 ## Behavior parity
 

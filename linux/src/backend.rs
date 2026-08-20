@@ -772,6 +772,8 @@ impl FlowBackend {
                     "google" => SpeechSource::Google,
                     _ => SpeechSource::System,
                 };
+                self.configuration_error = QString::default();
+                self.configuration_error_changed();
             }
             "hotKey" => {
                 self.settings.hot_key = match value {
