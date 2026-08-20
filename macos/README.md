@@ -15,7 +15,7 @@ capture.
 After choosing a team, a command-line build can use that same identity:
 
 ```sh
-xcodebuild -project apps/flow/macos/Flow.xcodeproj \
+xcodebuild -project macos/Flow.xcodeproj \
   -scheme Flow \
   -configuration Debug \
   -derivedDataPath /tmp/flow-derived-data \
@@ -41,12 +41,11 @@ The default hotkey and the two alternatives are configurable in Settings.
 
 Azure is optional. In **Settings > Speech**, choose **Azure Speech**, then add
 either your Azure Speech region (for example `westeurope`) or its HTTPS speech
-endpoint and its subscription key. Flow stores that key in this Mac's Keychain,
-separately from Wingmate. It never reads or reuses Wingmate's configuration.
+endpoint and its subscription key. Flow stores that key in this Mac's Keychain
+and never writes it to application settings.
 
-The setup screen links to Wingmate's existing free (F0) Azure Speech resource
-template and to the Azure Portal page listing the person's existing Speech
-resources.
+The setup screen links to Flow's free (F0) Azure Speech resource template and
+to the Azure Portal page listing the person's existing Speech resources.
 
 When Azure is selected, the text you ask Flow to read is sent to your Azure
 Speech resource for synthesis. System voices remain on-device. Use **Play test

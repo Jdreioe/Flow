@@ -23,8 +23,7 @@ On openSUSE, the runtime packages are `speech-dispatcher`,
 ## Run it
 
 ```sh
-cd apps/flow/linux
-cargo run
+cargo run -p flow-linux
 ```
 
 The desktop may show a one-time portal dialog asking you to confirm the global
@@ -39,9 +38,8 @@ per-user Speech Dispatcher service automatically when needed.
 To install a release build for the current user:
 
 ```sh
-cd apps/flow/linux
-cargo install --path .
-install -Dm644 io.github.jdreioe.flow.desktop \
+cargo install --path linux
+install -Dm644 linux/io.github.jdreioe.flow.desktop \
   "$HOME/.local/share/applications/io.github.jdreioe.flow.desktop"
 ```
 

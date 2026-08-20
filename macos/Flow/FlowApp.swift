@@ -781,8 +781,7 @@ private enum AzureCredentialsStore {
 }
 
 private enum AzurePortalURLs {
-    // The same F0 ARM template Wingmate offers to people who need a free Speech resource.
-    static let createSpeechResource = URL(string: "https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fjdreioe%2Fwingmate%2Fmain%2Finfra%2Fazure-user-f0%2Fazuredeploy.json")!
+    static let createSpeechResource = URL(string: "https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fjdreioe%2FFlow%2Fmain%2Finfra%2Fazure-user-f0%2Fazuredeploy.json")!
     static let speechResources = URL(string: "https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.CognitiveServices%2Faccounts")!
 }
 
