@@ -1,0 +1,23 @@
+[package]
+name = "flow-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared language planning and settings model for Flow"
+
+[dependencies]
+lingua = { version = "1.8.0", default-features = false, features = [
+    "bokmal",
+    "danish",
+    "dutch",
+    "english",
+    "french",
+    "german",
+    "italian",
+    "portuguese",
+    "spanish",
+    "swedish",
+] }
+serde = { version = "1", features = ["derive"] }
+unicode-segmentation = "1.12"
+uuid = { version = "1", features = ["serde", "v4"] }

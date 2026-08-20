@@ -1,0 +1,755 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import QtQuick.Window
+import QtMultimedia
+import Qt.labs.platform as Platform
+import Flow 1.0
+
+ApplicationWindow {
+    id: root
+    visible: false
+    width: 1
+    height: 1
+    title: "Flow"
+
+    property var snapshot: JSON.parse(backend.snapshot_json)
+    property var settings: snapshot.settings
+    property var pendingPlan: backend.pending_plan_json === "null"
+        ? null
+        : JSON.parse(backend.pending_plan_json)
+    property bool azureActive: false
+
+    function azurePlayer() {
+        return azurePlayerLoader.item ? azurePlayerLoader.item.player : null
+    }
+
+    function stopAzurePlayback() {
+        let player = azurePlayer()
+        if (player) {
+            player.stop()
+            player.source = ""
+        }
+        azureActive = false
+        azurePlayerLoader.active = false
+    }
+
+    function toggleTrayPanel() {
+        if (trayPanel.visible) {
+            trayPanel.hide()
+            return
+        }
+
+        let screen = trayPanel.screen
+        let availableX = screen.virtualX
+        let availableY = screen.virtualY
+        let availableWidth = screen.desktopAvailableWidth
+        let availableHeight = screen.desktopAvailableHeight
+        let icon = tray.geometry
+        if (icon.width > 0 && icon.height > 0) {
+            trayPanel.x = Math.max(availableX + 8,
+                Math.min(icon.x + Math.round((icon.width - trayPanel.width) / 2),
+                    availableX + availableWidth - trayPanel.width - 8))
+            trayPanel.y = icon.y > availableY + availableHeight / 2
+                ? icon.y - trayPanel.height - 8
+                : icon.y + icon.height + 8
+        } else {
+            trayPanel.x = availableX + availableWidth - trayPanel.width - 16
+            trayPanel.y = availableY + availableHeight - trayPanel.height - 48
+        }
+        trayPanel.show()
+        trayPanel.raise()
+    }
+
+    function languageName(tag) {
+        for (let entry of snapshot.supportedLanguages) {
+            if (entry[0] === tag)
+                return entry[1]
+        }
+        return tag
+    }
+
+    function allRoutes() {
+        let defaultRoute = {
+            id: "00000000-0000-0000-0000-000000000001",
+            languageTag: settings.defaultLanguageTag,
+            systemVoiceName: settings.systemVoiceName,
+            systemSpeechRate: settings.systemSpeechRate,
+            azureVoiceName: settings.azureVoiceName,
+            azureSpeechRate: settings.azureSpeechRate
+        }
+        return [defaultRoute].concat(settings.languageRoutes)
+    }
+
+    function voicesFor(languageTag) {
+        let base = languageTag.split("-")[0].toLowerCase()
+        return snapshot.systemVoices.filter(function(voice) {
+            return voice.languageTag.split("-")[0].toLowerCase() === base
+        }).map(function(voice) { return voice.name })
+    }
+
+    function azureVoicesFor(languageTag, multilingualOnly) {
+        let base = languageTag.split("-")[0].toLowerCase()
+        return snapshot.azureVoices.filter(function(voice) {
+            let locales = [voice.locale].concat(voice.secondaryLocales)
+            let supports = locales.some(function(locale) {
+                return locale.split("-")[0].toLowerCase() === base
+            })
+            let multilingual = voice.shortName.toLowerCase().includes("multilingual")
+                || voice.secondaryLocales.length > 0
+            return supports && (!multilingualOnly || multilingual)
+        }).map(function(voice) { return voice.shortName })
+    }
+
+    FlowBackend {
+        id: backend
+    }
+
+    Component.onCompleted: backend.start()
+
+    Connections {
+        target: backend
+
+        function onPlay_azure(fileUrl) {
+            azurePlayerLoader.active = true
+            let player = azurePlayer()
+            if (!player) {
+                backend.playback_failed("Flow could not initialize audio playback.")
+                return
+            }
+            player.source = fileUrl
+            azureActive = true
+            player.play()
+        }
+
+        function onPause_playback() {
+            let player = azurePlayer()
+            if (azureActive && player)
+                player.pause()
+        }
+
+        function onResume_playback() {
+            let player = azurePlayer()
+            if (azureActive && player)
+                player.play()
+        }
+
+        function onStop_audio() {
+            stopAzurePlayback()
+        }
+
+        function onShow_settings() {
+            settingsWindow.show()
+            settingsWindow.raise()
+            settingsWindow.requestActivate()
+        }
+    }
+
+    Loader {
+        id: azurePlayerLoader
+        active: false
+        sourceComponent: Item {
+            property alias player: player
+
+            AudioOutput {
+                id: azureOutput
+            }
+
+            MediaPlayer {
+                id: player
+                audioOutput: azureOutput
+
+                onMediaStatusChanged: {
+                    if (root.azureActive && mediaStatus === MediaPlayer.EndOfMedia) {
+                        backend.playback_finished()
+                        Qt.callLater(root.stopAzurePlayback)
+                    } else if (root.azureActive && mediaStatus === MediaPlayer.InvalidMedia) {
+                        backend.playback_failed("Azure returned audio that Flow could not play.")
+                        Qt.callLater(root.stopAzurePlayback)
+                    }
+                }
+                onErrorOccurred: function(error, errorString) {
+                    if (root.azureActive) {
+                        backend.playback_failed(errorString || "Azure playback ended unexpectedly.")
+                        Qt.callLater(root.stopAzurePlayback)
+                    }
+                }
+            }
+        }
+    }
+
+    Platform.SystemTrayIcon {
+        id: tray
+        visible: true
+        icon.name: "accessories-text-editor"
+        tooltip: "Flow"
+
+        onActivated: function(reason) {
+            if (reason === Platform.SystemTrayIcon.Trigger
+                    || reason === Platform.SystemTrayIcon.Context)
+                root.toggleTrayPanel()
+        }
+    }
+
+    Window {
+        id: trayPanel
+        visible: false
+        width: 220
+        height: 156
+        color: "transparent"
+        title: "Flow"
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 12
+            color: palette.window
+            border.color: palette.mid
+            border.width: 1
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 6
+
+                Button {
+                    Layout.fillWidth: true
+                    text: "Read selected text"
+                    onClicked: {
+                        trayPanel.hide()
+                        backend.read_selection()
+                    }
+                }
+                Button {
+                    Layout.fillWidth: true
+                    text: "Settings"
+                    onClicked: {
+                        trayPanel.hide()
+                        backend.open_settings()
+                    }
+                }
+                Button {
+                    Layout.fillWidth: true
+                    text: "Quit Flow"
+                    onClicked: Qt.quit()
+                }
+            }
+        }
+    }
+
+    Window {
+        id: popup
+        visible: backend.popup_visible
+        width: 520
+        height: backend.state === "languageCheck" ? 520 : 210
+        minimumWidth: 420
+        color: "transparent"
+        title: backend.state === "languageCheck" ? "Flow language check" : "Flow playback"
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            | (backend.state === "languageCheck" ? 0 : Qt.WindowDoesNotAcceptFocus)
+        x: Math.round((Screen.width - width) / 2)
+        y: Math.round(Screen.height * 0.12)
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 16
+            color: palette.window
+            border.color: palette.mid
+            border.width: 1
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 20
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: {
+                        switch (backend.state) {
+                        case "preparing": return "Preparing playback"
+                        case "playing": return "Reading"
+                        case "paused": return "Paused"
+                        case "languageCheck": return "Language check"
+                        case "finished": return "Finished"
+                        default: return "Flow"
+                        }
+                    }
+                    font.pixelSize: 20
+                    font.bold: true
+                    Accessible.name: text
+                }
+
+                Label {
+                    visible: backend.state === "message"
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: backend.message
+                }
+
+                Label {
+                    visible: backend.state === "preparing"
+                    Layout.fillWidth: true
+                    text: "Preparing speech…"
+                }
+
+                ScrollView {
+                    visible: backend.state === "languageCheck"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+
+                    Column {
+                        width: parent.width
+                        spacing: 12
+
+                        Label {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: "Choose how Flow should read these sentences before playback starts."
+                        }
+
+                        Repeater {
+                            model: pendingPlan
+                                ? pendingPlan.sentences.filter(function(sentence) { return sentence.needsReview })
+                                : []
+
+                            Frame {
+                                required property var modelData
+                                width: parent.width
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    spacing: 8
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                        wrapMode: Text.WordWrap
+                                        text: modelData.text
+                                    }
+                                    Label {
+                                        visible: modelData.detectedButUnconfigured
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                        text: "Flow detected " + root.languageName(modelData.detectedLanguageTag) + ", but it is not enabled."
+                                    }
+                                    Button {
+                                        visible: modelData.detectedButUnconfigured
+                                        text: "Enable " + root.languageName(modelData.detectedLanguageTag) + " in Settings"
+                                        onClicked: backend.enable_language(modelData.detectedLanguageTag)
+                                    }
+                                    ComboBox {
+                                        id: routePicker
+                                        Layout.fillWidth: true
+                                        model: root.allRoutes()
+                                        textRole: "languageTag"
+                                        valueRole: "id"
+                                        currentIndex: {
+                                            let routes = root.allRoutes()
+                                            for (let index = 0; index < routes.length; ++index) {
+                                                if (routes[index].id === modelData.route.id)
+                                                    return index
+                                            }
+                                            return 0
+                                        }
+                                        displayText: "Read as " + root.languageName(model.length > 0 ? model[currentIndex].languageTag : settings.defaultLanguageTag)
+                                        delegate: ItemDelegate {
+                                            required property var modelData
+                                            width: routePicker.width
+                                            text: root.languageName(modelData.languageTag)
+                                        }
+                                        onActivated: backend.choose_route(modelData.id, currentValue, false)
+                                    }
+                                    Button {
+                                        visible: !!modelData.detectedLanguageTag
+                                        flat: true
+                                        text: "Use this choice for all " + root.languageName(modelData.detectedLanguageTag) + " sentences"
+                                        onClicked: backend.choose_route(modelData.id, routePicker.currentValue, true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Item { Layout.fillHeight: backend.state !== "languageCheck" }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: backend.state === "playing" || backend.state === "paused"
+                        || backend.state === "languageCheck"
+
+                    Button {
+                        text: "Stop"
+                        Accessible.description: "Stop reading and close the Flow popup"
+                        onClicked: backend.stop()
+                    }
+                    Item { Layout.fillWidth: true }
+                    Button {
+                        visible: backend.state === "playing" || backend.state === "paused"
+                        text: backend.state === "paused" ? "Resume" : "Pause"
+                        onClicked: backend.pause_or_resume()
+                    }
+                    Button {
+                        visible: backend.state === "languageCheck"
+                        text: "Start reading"
+                        highlighted: true
+                        onClicked: backend.confirm_language_check()
+                    }
+                }
+            }
+        }
+    }
+
+    ApplicationWindow {
+        id: settingsWindow
+        visible: false
+        width: 720
+        height: 760
+        minimumWidth: 580
+        minimumHeight: 520
+        title: "Flow Settings"
+
+        onClosing: function(close) {
+            close.accepted = false
+            hide()
+        }
+
+        ScrollView {
+            anchors.fill: parent
+            contentWidth: availableWidth
+            clip: true
+
+            ColumnLayout {
+                width: parent.width
+                spacing: 14
+
+                Label {
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+                    Layout.topMargin: 20
+                    text: "Flow Settings"
+                    font.pixelSize: 26
+                    font.bold: true
+                }
+
+                GroupBox {
+                    title: "Access"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: [
+                                { value: "altSuperR", label: "Alt-Super-R" },
+                                { value: "altSuperSpace", label: "Alt-Super-Space" },
+                                { value: "controlAltR", label: "Control-Alt-R" }
+                            ]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: model.findIndex(function(item) { return item.value === settings.hotKey })
+                            onActivated: backend.update_setting("hotKey", currentValue)
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: backend.shortcut_status
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: "Flow reads highlighted text through Linux accessibility or the desktop's primary selection. It never replaces your normal clipboard."
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Language Flow"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        CheckBox {
+                            text: "Let Flow switch languages"
+                            checked: settings.languageSwitchingEnabled
+                            onToggled: backend.update_setting("languageSwitchingEnabled", checked ? "true" : "false")
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: "The default voice is the fallback. Add another language to give it its own voice. Detection stays on this device."
+                        }
+                        ComboBox {
+                            id: defaultLanguagePicker
+                            Layout.fillWidth: true
+                            model: snapshot.supportedLanguages
+                            currentIndex: model.findIndex(function(item) { return item[0] === settings.defaultLanguageTag })
+                            delegate: ItemDelegate {
+                                required property var modelData
+                                width: defaultLanguagePicker.width
+                                text: modelData[1]
+                            }
+                            displayText: "Default language: " + root.languageName(settings.defaultLanguageTag)
+                            onActivated: backend.update_setting("defaultLanguageTag", model[currentIndex][0])
+                        }
+
+                        Repeater {
+                            model: root.allRoutes()
+
+                            Frame {
+                                required property var modelData
+                                Layout.fillWidth: true
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    Label {
+                                        text: modelData.id === "00000000-0000-0000-0000-000000000001"
+                                            ? "Default voice"
+                                            : root.languageName(modelData.languageTag)
+                                        font.bold: true
+                                    }
+                                    ComboBox {
+                                        id: systemVoicePicker
+                                        visible: settings.speechSource === "system"
+                                        Layout.fillWidth: true
+                                        model: ["Desktop default voice"].concat(root.voicesFor(modelData.languageTag))
+                                        currentIndex: modelData.systemVoiceName
+                                            ? Math.max(0, model.indexOf(modelData.systemVoiceName))
+                                            : 0
+                                        onActivated: backend.update_route(modelData.id, "systemVoiceName",
+                                            currentIndex === 0 ? "" : currentText)
+                                    }
+                                    RowLayout {
+                                        visible: settings.speechSource === "system"
+                                        Label { text: "Speech rate" }
+                                        Slider {
+                                            Layout.fillWidth: true
+                                            from: -1
+                                            to: 1
+                                            value: modelData.systemSpeechRate
+                                            onMoved: backend.update_route(modelData.id, "systemSpeechRate", value.toString())
+                                        }
+                                    }
+                                    ComboBox {
+                                        id: routeAzureVoicePicker
+                                        visible: settings.speechSource === "azure" && settings.azureVoiceMode === "perLanguage"
+                                        Layout.fillWidth: true
+                                        model: root.azureVoicesFor(modelData.languageTag, false)
+                                        currentIndex: Math.max(0, model.indexOf(modelData.azureVoiceName || ""))
+                                        displayText: currentText || "Choose an Azure voice"
+                                        onActivated: backend.update_route(modelData.id, "azureVoiceName", currentText)
+                                    }
+                                    RowLayout {
+                                        visible: settings.speechSource === "azure" && settings.azureVoiceMode === "perLanguage"
+                                        Label { text: "Azure speech rate" }
+                                        Slider {
+                                            Layout.fillWidth: true
+                                            from: -1
+                                            to: 1
+                                            value: modelData.azureSpeechRate
+                                            onMoved: backend.update_route(modelData.id, "azureSpeechRate", value.toString())
+                                        }
+                                    }
+                                    Button {
+                                        visible: modelData.id !== "00000000-0000-0000-0000-000000000001"
+                                        text: "Remove language"
+                                        onClicked: backend.remove_language(modelData.id)
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            ComboBox {
+                                id: languageToAdd
+                                Layout.fillWidth: true
+                                model: snapshot.supportedLanguages.filter(function(entry) {
+                                    return !root.allRoutes().some(function(route) {
+                                        return route.languageTag.split("-")[0] === entry[0].split("-")[0]
+                                    })
+                                })
+                                delegate: ItemDelegate {
+                                    required property var modelData
+                                    width: languageToAdd.width
+                                    text: modelData[1]
+                                }
+                                displayText: currentIndex >= 0 ? model[currentIndex][1] : "All supported languages are enabled"
+                            }
+                            Button {
+                                text: "Add language"
+                                enabled: languageToAdd.currentIndex >= 0
+                                onClicked: backend.add_language(languageToAdd.model[languageToAdd.currentIndex][0])
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Azure Speech"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: [
+                                { value: "system", label: "System voice" },
+                                { value: "azure", label: "Azure voice" }
+                            ]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: settings.speechSource === "azure" ? 1 : 0
+                            onActivated: backend.update_setting("speechSource", currentValue)
+                        }
+                        Label {
+                            visible: !!settings.azureEndpoint
+                            text: settings.azureEndpoint ? "Configured for " + settings.azureEndpoint : ""
+                        }
+                        ComboBox {
+                            visible: !!settings.azureEndpoint
+                            Layout.fillWidth: true
+                            model: [
+                                { value: "multilingual", label: "One multilingual voice" },
+                                { value: "perLanguage", label: "A voice per language" }
+                            ]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: settings.azureVoiceMode === "perLanguage" ? 1 : 0
+                            onActivated: backend.update_setting("azureVoiceMode", currentValue)
+                        }
+                        ComboBox {
+                            id: azureVoicePicker
+                            visible: !!settings.azureEndpoint && settings.azureVoiceMode === "multilingual"
+                            Layout.fillWidth: true
+                            model: root.azureVoicesFor(settings.defaultLanguageTag, true)
+                            currentIndex: Math.max(0, model.indexOf(settings.azureVoiceName))
+                            displayText: currentText || "Choose a multilingual Azure voice"
+                            onActivated: backend.update_setting("azureVoiceName", currentText)
+                        }
+                        RowLayout {
+                            visible: !!settings.azureEndpoint && settings.azureVoiceMode === "multilingual"
+                            Label { text: "Azure speech rate" }
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1
+                                to: 1
+                                value: settings.azureSpeechRate
+                                onMoved: backend.update_setting("azureSpeechRate", value.toString())
+                            }
+                        }
+                        TextField {
+                            id: endpointField
+                            visible: !settings.azureEndpoint
+                            Layout.fillWidth: true
+                            placeholderText: "Region or HTTPS endpoint"
+                            Accessible.name: placeholderText
+                        }
+                        TextField {
+                            id: keyField
+                            visible: !settings.azureEndpoint
+                            Layout.fillWidth: true
+                            placeholderText: "Azure Speech subscription key"
+                            echoMode: TextInput.Password
+                            Accessible.name: placeholderText
+                        }
+                        Label {
+                            visible: backend.configuration_error.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: palette.accent
+                            text: backend.configuration_error
+                        }
+                        Button {
+                            visible: !settings.azureEndpoint
+                            text: "Save Azure configuration"
+                            enabled: endpointField.text.trim().length > 0 && keyField.text.trim().length > 0
+                            onClicked: {
+                                backend.save_azure_configuration(endpointField.text, keyField.text)
+                                keyField.clear()
+                            }
+                        }
+                        RowLayout {
+                            visible: !!settings.azureEndpoint
+                            Button {
+                                text: "Refresh Azure voices"
+                                onClicked: backend.refresh_azure_voices()
+                            }
+                            Button {
+                                text: "Remove Azure configuration"
+                                onClicked: backend.clear_azure_configuration()
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: "Azure receives selected text only when Azure is selected. The subscription key is stored in your desktop keyring."
+                        }
+                        Button {
+                            flat: true
+                            text: "Open Azure Speech resources"
+                            onClicked: Qt.openUrlExternally("https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.CognitiveServices%2Faccounts")
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Playback"
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        Button {
+                            text: "Play test voice"
+                            onClicked: backend.play_test_voice()
+                        }
+                        ComboBox {
+                            Layout.fillWidth: true
+                            model: [
+                                { value: "pauseResume", label: "Same selection: pause or resume" },
+                                { value: "restart", label: "Same selection: restart reading" }
+                            ]
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: settings.sameSelectionAction === "restart" ? 1 : 0
+                            onActivated: backend.update_setting("sameSelectionAction", currentValue)
+                        }
+                        RowLayout {
+                            Label { text: "Popup dismisses after " + Math.round(dismissSlider.value) + " seconds" }
+                            Slider {
+                                id: dismissSlider
+                                Layout.fillWidth: true
+                                from: 3
+                                to: 30
+                                stepSize: 1
+                                value: settings.popupDismissSeconds
+                                onMoved: backend.update_setting("popupDismissSeconds", value.toString())
+                            }
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: "Selections longer than about ten minutes are not read. Flow keeps selected text only while its playback popup is visible."
+                        }
+                    }
+                }
+
+                Item { Layout.preferredHeight: 6 }
+            }
+        }
+    }
+}
