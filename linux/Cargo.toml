@@ -10,6 +10,7 @@ ashpd = { version = "0.13.13", default-features = false, features = ["global_sho
 atspi-common = "0.14.0"
 atspi-connection = { version = "0.14.0", default-features = false }
 atspi-proxies = "0.14.0"
+base64 = "0.22"
 cpp = "0.5.10"
 cstr = "0.2"
 directories = "6"

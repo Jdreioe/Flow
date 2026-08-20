@@ -10,6 +10,7 @@ pub enum SpeechSource {
     #[default]
     System,
     Azure,
+    Google,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,6 +65,8 @@ pub struct LanguageRoute {
     pub system_speech_rate: f64,
     pub azure_voice_name: Option<String>,
     pub azure_speech_rate: f64,
+    pub google_voice_name: Option<String>,
+    pub google_speech_rate: f64,
 }
 
 impl LanguageRoute {
@@ -85,6 +88,8 @@ impl Default for LanguageRoute {
             system_speech_rate: 0.0,
             azure_voice_name: None,
             azure_speech_rate: 0.0,
+            google_voice_name: None,
+            google_speech_rate: 0.0,
         }
     }
 }
@@ -101,6 +106,9 @@ pub struct Settings {
     pub azure_voice_name: String,
     pub azure_speech_rate: f64,
     pub azure_voice_mode: AzureVoiceMode,
+    pub google_voice_name: Option<String>,
+    pub google_speech_rate: f64,
+    pub google_api_key_configured: bool,
     pub default_language_tag: String,
     pub language_switching_enabled: bool,
     pub language_routes: Vec<LanguageRoute>,
@@ -119,6 +127,9 @@ impl Default for Settings {
             azure_voice_name: "en-US-AvaMultilingualNeural".into(),
             azure_speech_rate: 0.0,
             azure_voice_mode: AzureVoiceMode::Multilingual,
+            google_voice_name: None,
+            google_speech_rate: 0.0,
+            google_api_key_configured: false,
             default_language_tag: "en-US".into(),
             language_switching_enabled: true,
             language_routes: Vec::new(),
@@ -136,6 +147,8 @@ impl Settings {
             system_speech_rate: self.system_speech_rate,
             azure_voice_name: Some(self.azure_voice_name.clone()),
             azure_speech_rate: self.azure_speech_rate,
+            google_voice_name: self.google_voice_name.clone(),
+            google_speech_rate: self.google_speech_rate,
         }
     }
 

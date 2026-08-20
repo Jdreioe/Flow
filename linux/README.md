@@ -1,8 +1,8 @@
 # Flow for Linux
 
 Flow is a Qt 6 and Rust system-tray reader. Select text in another application,
-then use Flow's global shortcut to hear it. System voices stay on-device;
-Azure neural voices are optional and use the person's own Azure Speech resource.
+then use Flow's global shortcut to hear it. System voices stay on-device; Azure
+and Google Cloud voices are optional and use the person's own cloud credentials.
 
 ## Requirements
 
@@ -64,7 +64,7 @@ web content.
 
 ## Azure Speech
 
-Azure is optional. In **Settings > Azure Speech**, enter either a Speech region
+Azure is optional. In **Settings > Speech**, choose **Azure voice**, then enter either a Speech region
 (for example `westeurope`) or its HTTPS speech endpoint and a subscription key.
 Flow stores the key in the Linux desktop keyring through Secret Service. The key
 is never written to Flow's settings file.
@@ -74,14 +74,31 @@ the configured Speech resource. Voice discovery and synthesis use Azure's Text
 to Speech REST API. Synthesized audio is held in a temporary file only for the
 duration of playback and is then deleted.
 
+## Google Cloud Text-to-Speech
+
+Google Cloud is optional. In **Settings > Speech**, choose **Google Cloud
+voice**, enable the Cloud Text-to-Speech API in a billing-enabled Google Cloud
+project, and add an API key restricted to that API. Flow stores the key in the
+Linux desktop keyring through Secret Service and sends it in the
+`x-goog-api-key` header; it is never written to Flow's settings file or placed
+in a request URL.
+
+Flow loads the current Google voice list after setup. Each language route can
+use Google's default voice or a named voice and its own speech rate. Because
+Google's synchronous API limits text input to 5,000 bytes, Flow splits long
+selections at Unicode-safe boundaries and plays the resulting MP3 segments in
+order. The temporary segments are deleted after playback or when playback is
+stopped.
+
 ## Behavior parity
 
 - Global shortcut and tray-menu activation
 - AT-SPI selected-text capture with a non-destructive primary-selection fallback
-- System and Azure voices, speech rate, pause/resume, stop, and test playback
+- System, Azure, and Google Cloud voices, speech rate, pause/resume, stop, and
+  test playback
 - Sentence-level on-device language detection across Flow's ten languages
 - Language review when detection is uncertain or a language is not configured
-- Per-language system/Azure routing and Azure multilingual mode
+- Per-language system/Azure/Google routing and Azure multilingual mode
 - Configurable popup dismissal and same-selection behavior
 - A roughly ten-minute selection limit and no reading history
 

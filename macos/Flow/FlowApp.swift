@@ -79,6 +79,9 @@ final class FlowModel: ObservableObject {
     @Published private(set) var azureEndpoint: String?
     @Published private(set) var azureVoices: [AzureVoiceCatalog.Voice] = []
     @Published private(set) var azureVoiceLoadError: String?
+    @Published private(set) var googleConfigured: Bool
+    @Published private(set) var googleVoices: [GoogleVoiceCatalog.Voice] = []
+    @Published private(set) var googleVoiceLoadError: String?
     @Published private(set) var languagePlan: LanguageFlow.Plan?
     @Published private(set) var pendingLanguagePlan: LanguageFlow.Plan?
     @Published var settings: FlowSettings {
@@ -97,6 +100,7 @@ final class FlowModel: ObservableObject {
 
     private let systemSpeech = SystemSpeechEngine()
     private let azureSpeech = AzureSpeechEngine()
+    private let googleSpeech = GoogleSpeechEngine()
     private var activeSpeech: FlowSpeechEngine?
     private var dismissTask: Task<Void, Never>?
 
@@ -106,6 +110,7 @@ final class FlowModel: ObservableObject {
         settings = loadedSettings
         accessibilityTrusted = AccessibilitySelectionReader.isTrusted
         azureEndpoint = AzureCredentialsStore.load()?.endpoint
+        googleConfigured = GoogleCredentialsStore.load() != nil
         let finished: () -> Void = { [weak self] in
             Task { @MainActor in
                 self?.finishedReading()
@@ -116,8 +121,13 @@ final class FlowModel: ObservableObject {
         azureSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
         }
+        googleSpeech.onFinished = finished
+        googleSpeech.onFailure = { [weak self] message in
+            Task { @MainActor in self?.showMessage(message) }
+        }
         saveSettings()
         refreshAzureVoices()
+        refreshGoogleVoices()
     }
 
     func readSelectionFromMenu() {
@@ -242,6 +252,8 @@ final class FlowModel: ObservableObject {
             systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier,
             azureVoiceName: settings.azureVoiceName,
             azureSpeechRate: settings.azureSpeechRate,
+            googleVoiceName: nil,
+            googleSpeechRate: settings.googleSpeechRate,
         ))
         openSettings()
     }
@@ -325,6 +337,36 @@ final class FlowModel: ObservableObject {
         }
     }
 
+    func saveGoogleConfiguration(apiKey: String) throws {
+        let key = try GoogleAPIKey.validate(apiKey)
+        try GoogleCredentialsStore.save(key)
+        googleConfigured = true
+        refreshGoogleVoices()
+    }
+
+    func clearGoogleConfiguration() {
+        GoogleCredentialsStore.clear()
+        googleConfigured = false
+        googleVoices = []
+        googleVoiceLoadError = nil
+        if settings.speechSource == .google { settings.speechSource = .system }
+    }
+
+    func refreshGoogleVoices() {
+        guard let apiKey = GoogleCredentialsStore.load() else { return }
+        googleVoiceLoadError = nil
+        Task { [weak self] in
+            do {
+                let voices = try await GoogleVoiceCatalog.list(apiKey: apiKey)
+                guard !Task.isCancelled else { return }
+                self?.googleVoices = voices
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.googleVoiceLoadError = "Flow could not load Google voices. Check the API key and confirm that Cloud Text-to-Speech is enabled."
+            }
+        }
+    }
+
     private func selectedSpeechEngine() -> FlowSpeechEngine? {
         switch settings.speechSource {
         case .system:
@@ -335,6 +377,12 @@ final class FlowModel: ObservableObject {
                 return nil
             }
             return azureSpeech
+        case .google:
+            guard googleConfigured else {
+                showMessage("Set up Google Cloud Text-to-Speech before choosing Google voice.")
+                return nil
+            }
+            return googleSpeech
         }
     }
 
@@ -877,6 +925,266 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
     }
 }
 
+private enum GoogleConfigurationError: LocalizedError {
+    case invalidKey
+    case keychain(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidKey: "Enter a valid Google Cloud API key."
+        case .keychain: "Flow could not save the Google Cloud credential in your Keychain."
+        }
+    }
+}
+
+private enum GoogleAPIKey {
+    static func validate(_ rawValue: String) throws -> String {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains(where: \.isWhitespace) else {
+            throw GoogleConfigurationError.invalidKey
+        }
+        return value
+    }
+}
+
+private enum GoogleCredentialsStore {
+    private static let service = "io.github.jdreioe.flow.google-cloud-tts"
+    private static let account = "byok"
+
+    static func load() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func save(_ apiKey: String) throws {
+        clear()
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: Data(apiKey.utf8),
+        ]
+        let status = SecItemAdd(item as CFDictionary, nil)
+        guard status == errSecSuccess else { throw GoogleConfigurationError.keychain(status) }
+    }
+
+    static func clear() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+enum GoogleVoiceCatalog {
+    struct Voice: Decodable, Identifiable, Hashable {
+        let languageCodes: [String]
+        let name: String
+        let ssmlGender: String
+
+        var id: String { name }
+
+        func supports(languageTag: String) -> Bool {
+            let base = languageTag.split(separator: "-").first?.lowercased()
+            return languageCodes.contains {
+                $0.split(separator: "-").first?.lowercased() == base
+            }
+        }
+    }
+
+    private struct Response: Decodable {
+        let voices: [Voice]
+    }
+
+    static func list(apiKey: String) async throws -> [Voice] {
+        var request = URLRequest(url: URL(string: "https://texttospeech.googleapis.com/v1/voices")!)
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        request.setValue("Flow", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(Response.self, from: data).voices
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+private enum GoogleCloudURLs {
+    static let credentials = URL(string: "https://console.cloud.google.com/apis/credentials")!
+    static let textToSpeechAPI = URL(string: "https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")!
+}
+
+final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine {
+    private static let maximumInputBytes = 4_500
+
+    var onFinished: (() -> Void)?
+    var onFailure: ((String) -> Void)?
+    private var player: AVAudioPlayer?
+    private var audioQueue: [Data] = []
+    private var synthesisTask: Task<Void, Never>?
+
+    func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
+        stop()
+        guard let apiKey = GoogleCredentialsStore.load() else {
+            onFailure?("Set up Google Cloud Text-to-Speech before choosing Google voice.")
+            return
+        }
+        synthesisTask = Task { [weak self] in
+            do {
+                let audio = try await Self.synthesize(plan: plan, apiKey: apiKey)
+                try Task.checkCancellation()
+                await MainActor.run { self?.play(audio) }
+            } catch is CancellationError {
+            } catch {
+                await MainActor.run {
+                    self?.onFailure?("Google Cloud could not synthesize this selection. Check the API key and voice.")
+                }
+            }
+        }
+    }
+
+    func pause() { player?.pause() }
+    func resume() { player?.play() }
+    func stop() {
+        synthesisTask?.cancel()
+        synthesisTask = nil
+        player?.stop()
+        player = nil
+        audioQueue = []
+    }
+
+    private func play(_ audio: [Data]) {
+        audioQueue = audio
+        playNextSegment()
+    }
+
+    private func playNextSegment() {
+        guard !audioQueue.isEmpty else {
+            player = nil
+            onFinished?()
+            return
+        }
+        do {
+            let player = try AVAudioPlayer(data: audioQueue.removeFirst())
+            player.delegate = self
+            self.player = player
+            guard player.play() else { throw CocoaError(.fileReadCorruptFile) }
+        } catch {
+            audioQueue = []
+            onFailure?("Google Cloud returned audio that Flow could not play.")
+        }
+    }
+
+    private struct SynthesisRequest: Encodable {
+        let input: Input
+        let voice: Voice
+        let audioConfig: AudioConfig
+
+        struct Input: Encodable { let text: String }
+        struct Voice: Encodable {
+            let languageCode: String
+            let name: String?
+        }
+        struct AudioConfig: Encodable {
+            let audioEncoding = "MP3"
+            let speakingRate: Float?
+        }
+    }
+
+    private struct SynthesisResponse: Decodable {
+        let audioContent: String
+    }
+
+    private static func synthesize(plan: LanguageFlow.Plan, apiKey: String) async throws -> [Data] {
+        var audio: [Data] = []
+        for sentence in plan.sentences {
+            for chunk in textChunks(sentence.text) {
+                try Task.checkCancellation()
+                let requestBody = SynthesisRequest(
+                    input: .init(text: chunk),
+                    voice: .init(
+                        languageCode: sentence.route.languageTag,
+                        name: sentence.route.googleVoiceName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                    ),
+                    audioConfig: .init(speakingRate: googleSpeakingRate(sentence.route.googleSpeechRate))
+                )
+                var request = URLRequest(url: URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize")!)
+                request.httpMethod = "POST"
+                request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+                request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+                request.setValue("Flow", forHTTPHeaderField: "User-Agent")
+                request.httpBody = try JSONEncoder().encode(requestBody)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                let encoded = try JSONDecoder().decode(SynthesisResponse.self, from: data).audioContent
+                guard let segment = Data(base64Encoded: encoded), !segment.isEmpty else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                audio.append(segment)
+            }
+        }
+        guard !audio.isEmpty else { throw URLError(.zeroByteResource) }
+        return audio
+    }
+
+    private static func googleSpeakingRate(_ rate: Float) -> Float? {
+        let minimum = AVSpeechUtteranceMinimumSpeechRate
+        let maximum = AVSpeechUtteranceMaximumSpeechRate
+        let position = (min(max(rate, minimum), maximum) - minimum) / (maximum - minimum)
+        let speakingRate = 0.5 + position
+        return abs(speakingRate - 1) > Float.ulpOfOne ? speakingRate : nil
+    }
+
+    private static func textChunks(_ text: String) -> [String] {
+        var remaining = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var chunks: [String] = []
+        while remaining.utf8.count > maximumInputBytes {
+            var end = remaining.startIndex
+            var byteCount = 0
+            var lastWhitespace: String.Index?
+            while end < remaining.endIndex {
+                let next = remaining.index(after: end)
+                let characterBytes = remaining[end..<next].utf8.count
+                if byteCount + characterBytes > maximumInputBytes { break }
+                if remaining[end].isWhitespace { lastWhitespace = end }
+                byteCount += characterBytes
+                end = next
+            }
+            let split = lastWhitespace ?? end
+            chunks.append(String(remaining[..<split]).trimmingCharacters(in: .whitespacesAndNewlines))
+            remaining = String(remaining[split...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if !remaining.isEmpty { chunks.append(remaining) }
+        return chunks
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        if flag {
+            playNextSegment()
+        } else {
+            audioQueue = []
+            onFailure?("Google Cloud playback ended unexpectedly.")
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 struct FlowSettings: Codable, Equatable {
     static let storageKey = "io.github.jdreioe.flow.settings"
     static let maximumSelectionCharacters = 45_000
@@ -897,12 +1205,14 @@ struct FlowSettings: Codable, Equatable {
     enum SpeechSource: String, Codable, CaseIterable, Identifiable {
         case system
         case azure
+        case google
 
         var id: String { rawValue }
         var title: String {
             switch self {
             case .system: "System voice"
             case .azure: "Azure voice"
+            case .google: "Google Cloud voice"
             }
         }
     }
@@ -914,6 +1224,8 @@ struct FlowSettings: Codable, Equatable {
         var systemSpeechRate: Float
         var azureVoiceName: String?
         var azureSpeechRate: Float
+        var googleVoiceName: String?
+        var googleSpeechRate: Float
 
         init(
             id: UUID = UUID(),
@@ -922,6 +1234,8 @@ struct FlowSettings: Codable, Equatable {
             systemSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate,
             azureVoiceName: String? = nil,
             azureSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate,
+            googleVoiceName: String? = nil,
+            googleSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate,
         ) {
             self.id = id
             self.languageTag = languageTag
@@ -929,6 +1243,26 @@ struct FlowSettings: Codable, Equatable {
             self.systemSpeechRate = systemSpeechRate
             self.azureVoiceName = azureVoiceName
             self.azureSpeechRate = azureSpeechRate
+            self.googleVoiceName = googleVoiceName
+            self.googleSpeechRate = googleSpeechRate
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, languageTag, systemVoiceIdentifier, systemSpeechRate
+            case azureVoiceName, azureSpeechRate, googleVoiceName, googleSpeechRate
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            id = try values.decode(UUID.self, forKey: .id)
+            languageTag = try values.decode(String.self, forKey: .languageTag)
+            systemVoiceIdentifier = try values.decodeIfPresent(String.self, forKey: .systemVoiceIdentifier)
+            systemSpeechRate = try values.decode(Float.self, forKey: .systemSpeechRate)
+            azureVoiceName = try values.decodeIfPresent(String.self, forKey: .azureVoiceName)
+            azureSpeechRate = try values.decode(Float.self, forKey: .azureSpeechRate)
+            googleVoiceName = try values.decodeIfPresent(String.self, forKey: .googleVoiceName)
+            googleSpeechRate = try values.decodeIfPresent(Float.self, forKey: .googleSpeechRate)
+                ?? AVSpeechUtteranceDefaultSpeechRate
         }
 
         var displayName: String {
@@ -953,6 +1287,8 @@ struct FlowSettings: Codable, Equatable {
     var azureVoiceName = "en-US-AvaMultilingualNeural"
     var azureSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var azureVoiceMode: AzureVoiceMode = .multilingual
+    var googleVoiceName: String?
+    var googleSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var defaultLanguageTag = "en-US"
     var languageSwitchingEnabled = true
     var languageRoutes: [LanguageRoute] = []
@@ -962,6 +1298,7 @@ struct FlowSettings: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction
         case azureVoiceName, azureSpeechRate, azureVoiceMode
+        case googleVoiceName, googleSpeechRate
         case defaultLanguageTag, languageSwitchingEnabled, languageRoutes
     }
 
@@ -978,6 +1315,8 @@ struct FlowSettings: Codable, Equatable {
         azureVoiceName = try values.decodeIfPresent(String.self, forKey: .azureVoiceName) ?? "en-US-AvaMultilingualNeural"
         azureSpeechRate = try values.decodeIfPresent(Float.self, forKey: .azureSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         azureVoiceMode = try values.decodeIfPresent(AzureVoiceMode.self, forKey: .azureVoiceMode) ?? .multilingual
+        googleVoiceName = try values.decodeIfPresent(String.self, forKey: .googleVoiceName)
+        googleSpeechRate = try values.decodeIfPresent(Float.self, forKey: .googleSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         defaultLanguageTag = try values.decodeIfPresent(String.self, forKey: .defaultLanguageTag) ?? "en-US"
         languageSwitchingEnabled = try values.decodeIfPresent(Bool.self, forKey: .languageSwitchingEnabled) ?? true
         languageRoutes = try values.decodeIfPresent([LanguageRoute].self, forKey: .languageRoutes) ?? []
@@ -991,6 +1330,8 @@ struct FlowSettings: Codable, Equatable {
             systemSpeechRate: speechRate,
             azureVoiceName: azureVoiceName,
             azureSpeechRate: azureSpeechRate,
+            googleVoiceName: googleVoiceName,
+            googleSpeechRate: googleSpeechRate,
         )
     }
 
@@ -1311,10 +1652,11 @@ private struct FlowSettingsView: View {
                     .foregroundStyle(.secondary)
                 Picker("Default language", selection: Binding(
                     get: { model.settings.defaultLanguageTag },
-                    set: { languageTag in
-                        model.settings.defaultLanguageTag = languageTag
-                        model.settings.voiceIdentifier = SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier
-                    },
+                        set: { languageTag in
+                            model.settings.defaultLanguageTag = languageTag
+                            model.settings.voiceIdentifier = SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier
+                            model.settings.googleVoiceName = nil
+                        },
                 )) {
                     ForEach(FlowLanguageOption.allCases) { language in
                         Text(language.title).tag(language.tag)
@@ -1328,12 +1670,16 @@ private struct FlowSettingsView: View {
                             model.settings.speechRate = route.systemSpeechRate
                             model.settings.azureVoiceName = route.azureVoiceName ?? model.settings.azureVoiceName
                             model.settings.azureSpeechRate = route.azureSpeechRate
+                            model.settings.googleVoiceName = route.googleVoiceName
+                            model.settings.googleSpeechRate = route.googleSpeechRate
                         },
                     ),
                     voices: voices,
                     azureVoices: model.azureVoices,
+                    googleVoices: model.googleVoices,
                     showSystemRoute: model.settings.speechSource == .system,
                     showAzureRoute: model.settings.speechSource == .azure && model.settings.azureVoiceMode == .perLanguage,
+                    showGoogleRoute: model.settings.speechSource == .google,
                     isDefault: true,
                     remove: {},
                 )
@@ -1342,8 +1688,10 @@ private struct FlowSettingsView: View {
                             route: $route,
                             voices: voices,
                             azureVoices: model.azureVoices,
+                            googleVoices: model.googleVoices,
                             showSystemRoute: model.settings.speechSource == .system,
                             showAzureRoute: model.settings.speechSource == .azure && model.settings.azureVoiceMode == .perLanguage,
+                            showGoogleRoute: model.settings.speechSource == .google,
                             isDefault: false,
                     ) {
                         model.settings.languageRoutes.removeAll { $0.id == route.id }
@@ -1364,12 +1712,14 @@ private struct FlowSettingsView: View {
                             systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageToAdd)?.identifier,
                             azureVoiceName: model.settings.azureVoiceName,
                             azureSpeechRate: model.settings.azureSpeechRate,
+                            googleVoiceName: nil,
+                            googleSpeechRate: model.settings.googleSpeechRate,
                         ))
                     }
                 }
             }
-            Section("Azure Speech") {
-                AzureConfigurationView(model: model)
+            Section("Speech") {
+                SpeechConfigurationView(model: model)
             }
             Section("Playback") {
                 Button("Play test voice") { model.playTestVoice() }
@@ -1388,7 +1738,7 @@ private struct FlowSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Privacy") {
-                Text("Flow keeps selected text only while the playback popup is visible. System language detection and voices are on-device. Azure receives text only when Azure is selected.")
+                Text("Flow keeps selected text only while the playback popup is visible. System language detection and voices are on-device. A cloud provider receives text only when that provider is selected.")
                     .font(.caption)
             }
         }
@@ -1423,8 +1773,10 @@ private struct LanguageRouteEditor: View {
     @Binding var route: FlowSettings.LanguageRoute
     let voices: [SystemSpeechEngine.Voice]
     let azureVoices: [AzureVoiceCatalog.Voice]
+    let googleVoices: [GoogleVoiceCatalog.Voice]
     let showSystemRoute: Bool
     let showAzureRoute: Bool
+    let showGoogleRoute: Bool
     let isDefault: Bool
     let remove: () -> Void
 
@@ -1435,6 +1787,10 @@ private struct LanguageRouteEditor: View {
 
     private var matchingAzureVoices: [AzureVoiceCatalog.Voice] {
         azureVoices.filter { $0.supports(languageTag: route.languageTag) }
+    }
+
+    private var matchingGoogleVoices: [GoogleVoiceCatalog.Voice] {
+        googleVoices.filter { $0.supports(languageTag: route.languageTag) }
     }
 
     var body: some View {
@@ -1475,6 +1831,22 @@ private struct LanguageRouteEditor: View {
                         .foregroundStyle(.orange)
                 }
             }
+            if showGoogleRoute {
+                Picker("Google voice", selection: $route.googleVoiceName) {
+                    Text("Google default voice").tag(String?.none)
+                    ForEach(matchingGoogleVoices) { voice in
+                        Text(voice.name).tag(String?.some(voice.name))
+                    }
+                }
+                Slider(value: $route.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
+                    Text("Google speech rate")
+                }
+                if matchingGoogleVoices.isEmpty {
+                    Text("No Google voices were loaded for \(route.displayName). The default voice may still be available.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
             if showSystemRoute && matchingVoices.isEmpty {
                 Text("No installed \(route.displayName) voice was found.")
                     .font(.caption)
@@ -1486,14 +1858,20 @@ private struct LanguageRouteEditor: View {
     }
 }
 
-private struct AzureConfigurationView: View {
+private struct SpeechConfigurationView: View {
     @ObservedObject var model: FlowModel
     @State private var endpoint = ""
     @State private var subscriptionKey = ""
-    @State private var error: String?
+    @State private var googleAPIKey = ""
+    @State private var azureError: String?
+    @State private var googleError: String?
 
     private var multilingualVoices: [AzureVoiceCatalog.Voice] {
         model.azureVoices.filter(\.isMultilingual)
+    }
+
+    private var defaultGoogleVoices: [GoogleVoiceCatalog.Voice] {
+        model.googleVoices.filter { $0.supports(languageTag: model.settings.defaultLanguageTag) }
     }
 
     var body: some View {
@@ -1502,69 +1880,131 @@ private struct AzureConfigurationView: View {
                 Text(source.title).tag(source)
             }
         }
-        if let configuredEndpoint = model.azureEndpoint {
-            Text("Configured for \(configuredEndpoint)")
+        if model.settings.speechSource == .system {
+            Text("System voices and language detection stay on this Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker("Azure voice mode", selection: $model.settings.azureVoiceMode) {
-                ForEach(FlowSettings.AzureVoiceMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            if model.settings.azureVoiceMode == .multilingual {
-                if multilingualVoices.isEmpty {
-                    if let message = model.azureVoiceLoadError {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text("Loading Azure voices…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Picker("Azure voice", selection: $model.settings.azureVoiceName) {
-                        ForEach(multilingualVoices) { voice in
-                            Text(voice.shortName).tag(voice.shortName)
-                        }
-                    }
-                }
-                Slider(value: $model.settings.azureSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                    Text("Azure speech rate")
-                }
-            } else {
-                Text("Set each language's Azure voice and rate in Language Flow.")
+        } else if model.settings.speechSource == .azure {
+            if let configuredEndpoint = model.azureEndpoint {
+                Text("Configured for \(configuredEndpoint)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Picker("Azure voice mode", selection: $model.settings.azureVoiceMode) {
+                    ForEach(FlowSettings.AzureVoiceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                if model.settings.azureVoiceMode == .multilingual {
+                    if multilingualVoices.isEmpty {
+                        if let message = model.azureVoiceLoadError {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("Loading Azure voices…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Picker("Azure voice", selection: $model.settings.azureVoiceName) {
+                            ForEach(multilingualVoices) { voice in
+                                Text(voice.shortName).tag(voice.shortName)
+                            }
+                        }
+                    }
+                    Slider(value: $model.settings.azureSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
+                        Text("Azure speech rate")
+                    }
+                } else {
+                    Text("Set each language's Azure voice and rate in Language Flow.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Refresh Azure voices") { model.refreshAzureVoices() }
+                Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)
+                Button("Remove Azure configuration", role: .destructive) {
+                    model.clearAzureConfiguration()
+                }
+            } else {
+                Text("Azure sends selected text to your Speech resource to synthesize it. The subscription key stays in this Mac's Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link("Create a free Azure Speech resource", destination: AzurePortalURLs.createSpeechResource)
+                Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)
+                TextField("Region or HTTPS endpoint", text: $endpoint)
+                SecureField("Azure Speech subscription key", text: $subscriptionKey)
+                if let azureError {
+                    Text(azureError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Button("Save Azure configuration") {
+                    do {
+                        try model.saveAzureConfiguration(endpoint: endpoint, subscriptionKey: subscriptionKey)
+                        subscriptionKey = ""
+                        azureError = nil
+                    } catch {
+                        azureError = error.localizedDescription
+                    }
+                }
+                .disabled(endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || subscriptionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            Button("Refresh Azure voices") { model.refreshAzureVoices() }
-            Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)
-            Button("Remove Azure configuration", role: .destructive) {
-                model.clearAzureConfiguration()
-            }
-        } else {
-            Text("Azure sends selected text to your Speech resource to synthesize it. The subscription key stays in this Mac's Keychain.")
+        } else if model.googleConfigured {
+            Text("Google Cloud API key configured")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Link("Create a free Azure Speech resource", destination: AzurePortalURLs.createSpeechResource)
-            Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)
-            TextField("Region or HTTPS endpoint", text: $endpoint)
-            SecureField("Azure Speech subscription key", text: $subscriptionKey)
-            if let error {
-                Text(error)
+            if defaultGoogleVoices.isEmpty {
+                if let message = model.googleVoiceLoadError {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Loading Google voices…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Picker("Google voice", selection: $model.settings.googleVoiceName) {
+                    Text("Google default voice").tag(String?.none)
+                    ForEach(defaultGoogleVoices) { voice in
+                        Text(voice.name).tag(String?.some(voice.name))
+                    }
+                }
+            }
+            Slider(value: $model.settings.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
+                Text("Google speech rate")
+            }
+            Button("Refresh Google voices") { model.refreshGoogleVoices() }
+            Button("Remove Google configuration", role: .destructive) {
+                model.clearGoogleConfiguration()
+            }
+            Text("Google receives selected text only when Google Cloud is selected. The API key stays in this Mac's Keychain. Restrict it to the Cloud Text-to-Speech API.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Link("Open Google Cloud API credentials", destination: GoogleCloudURLs.credentials)
+            Link("Enable Cloud Text-to-Speech API", destination: GoogleCloudURLs.textToSpeechAPI)
+        } else {
+            Text("Enable Cloud Text-to-Speech in a Google Cloud project, create an API key restricted to that API, then add it here. Selected text is sent only for playback.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Link("Enable Cloud Text-to-Speech API", destination: GoogleCloudURLs.textToSpeechAPI)
+            Link("Create or restrict an API key", destination: GoogleCloudURLs.credentials)
+            SecureField("Google Cloud API key", text: $googleAPIKey)
+            if let googleError {
+                Text(googleError)
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            Button("Save Azure configuration") {
+            Button("Save Google configuration") {
                 do {
-                    try model.saveAzureConfiguration(endpoint: endpoint, subscriptionKey: subscriptionKey)
-                    subscriptionKey = ""
-                    error = nil
+                    try model.saveGoogleConfiguration(apiKey: googleAPIKey)
+                    googleAPIKey = ""
+                    googleError = nil
                 } catch {
-                    self.error = error.localizedDescription
+                    googleError = error.localizedDescription
                 }
             }
-            .disabled(endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || subscriptionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 }

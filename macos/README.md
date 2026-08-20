@@ -1,8 +1,8 @@
 # Flow for macOS
 
 Flow is a native macOS menu-bar reader. Select text in an application, then
-press Flow's global hotkey to hear it. System voices are the default; Azure
-neural voices are available with the person's own Azure Speech resource.
+press Flow's global hotkey to hear it. System voices are the default; Azure and
+Google Cloud voices are available with the person's own cloud credentials.
 
 ## Run it
 
@@ -58,12 +58,34 @@ The multilingual selector shows multilingual voices by Azure short name. Each
 per-language route shows voices whose primary or secondary locale supports that
 language.
 
+## Google Cloud Text-to-Speech setup
+
+Google Cloud is optional and uses the person's own API key:
+
+1. In **Settings > Speech**, choose **Google Cloud voice**.
+2. Follow Flow's link to enable the Cloud Text-to-Speech API in a Google Cloud
+   project with billing enabled.
+3. Create an API key and apply an API restriction allowing only the Cloud
+   Text-to-Speech API.
+4. Paste the key into Flow and choose **Save Google configuration**.
+
+Flow stores the key in this Mac's Keychain and sends it in the
+`x-goog-api-key` header, so it is not placed in a URL or settings file. After
+setup, Flow loads Google's current voice list. Each Language Flow route can use
+Google's default voice for its language or a named voice, with an independent
+speech rate.
+
+Google's synchronous API limits each text input to 5,000 bytes. Flow splits
+long selections at Unicode-safe boundaries and plays the returned MP3 segments
+in order. Only text explicitly requested for playback is sent to Google Cloud;
+generated audio is kept in memory for that playback.
+
 ## v1 behavior
 
 - Captures selected text through macOS Accessibility before showing its popup.
 - Uses a non-activating playback popup so the source application keeps focus.
-- Reads with selectable system voices through `AVSpeechSynthesizer`, or an
-  opt-in Azure neural voice through Azure's Text to Speech REST API.
+- Reads with selectable system voices through `AVSpeechSynthesizer`, or opt-in
+  Azure and Google Cloud voices through their REST APIs.
 - Includes **Language Flow**: add a language and voice in Settings, and Flow
   detects each sentence locally before choosing the configured system voice.
   It asks before playback when detection is uncertain or a detected language is
@@ -71,6 +93,8 @@ language.
 - Azure multilingual mode retains one Azure voice and sends a language tag for
   each sentence. Azure per-language mode uses the configured voice and rate for
   each language route.
+- Google Cloud mode uses the configured voice and rate for each language route,
+  falling back to Google's default voice when no named voice is selected.
 - Keeps captured text in memory only while the popup is visible.
 - Limits selections to roughly ten minutes of speech.
 - Mixes with other applications' audio. macOS audio ducking is explicitly not

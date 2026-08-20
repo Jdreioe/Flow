@@ -1,8 +1,8 @@
 # Flow
 
 Flow is a lightweight desktop app that reads highlighted text aloud. It has
-native applications for macOS and Linux, including system and Azure voices,
-sentence-level language routing, and global shortcuts.
+native applications for macOS and Linux, including system, Azure, and Google
+Cloud voices, sentence-level language routing, and global shortcuts.
 
 ## Repository layout
 

@@ -18,20 +18,20 @@ ApplicationWindow {
     property var pendingPlan: backend.pending_plan_json === "null"
         ? null
         : JSON.parse(backend.pending_plan_json)
-    property bool azureActive: false
+    property bool cloudActive: false
 
-    function azurePlayer() {
-        return azurePlayerLoader.item ? azurePlayerLoader.item.player : null
+    function cloudPlayer() {
+        return cloudPlayerLoader.item ? cloudPlayerLoader.item.player : null
     }
 
-    function stopAzurePlayback() {
-        let player = azurePlayer()
+    function stopCloudPlayback() {
+        let player = cloudPlayer()
         if (player) {
             player.stop()
             player.source = ""
         }
-        azureActive = false
-        azurePlayerLoader.active = false
+        cloudActive = false
+        cloudPlayerLoader.active = false
     }
 
     function toggleTrayPanel() {
@@ -76,7 +76,9 @@ ApplicationWindow {
             systemVoiceName: settings.systemVoiceName,
             systemSpeechRate: settings.systemSpeechRate,
             azureVoiceName: settings.azureVoiceName,
-            azureSpeechRate: settings.azureSpeechRate
+            azureSpeechRate: settings.azureSpeechRate,
+            googleVoiceName: settings.googleVoiceName,
+            googleSpeechRate: settings.googleSpeechRate
         }
         return [defaultRoute].concat(settings.languageRoutes)
     }
@@ -101,6 +103,15 @@ ApplicationWindow {
         }).map(function(voice) { return voice.shortName })
     }
 
+    function googleVoicesFor(languageTag) {
+        let base = languageTag.split("-")[0].toLowerCase()
+        return snapshot.googleVoices.filter(function(voice) {
+            return voice.languageCodes.some(function(languageCode) {
+                return languageCode.split("-")[0].toLowerCase() === base
+            })
+        }).map(function(voice) { return voice.name })
+    }
+
     FlowBackend {
         id: backend
     }
@@ -110,32 +121,32 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onPlay_azure(fileUrl) {
-            azurePlayerLoader.active = true
-            let player = azurePlayer()
+        function onPlay_cloud(fileUrl) {
+            cloudPlayerLoader.active = true
+            let player = cloudPlayer()
             if (!player) {
                 backend.playback_failed("Flow could not initialize audio playback.")
                 return
             }
             player.source = fileUrl
-            azureActive = true
+            cloudActive = true
             player.play()
         }
 
         function onPause_playback() {
-            let player = azurePlayer()
-            if (azureActive && player)
+            let player = cloudPlayer()
+            if (cloudActive && player)
                 player.pause()
         }
 
         function onResume_playback() {
-            let player = azurePlayer()
-            if (azureActive && player)
+            let player = cloudPlayer()
+            if (cloudActive && player)
                 player.play()
         }
 
         function onStop_audio() {
-            stopAzurePlayback()
+            stopCloudPlayback()
         }
 
         function onShow_settings() {
@@ -146,32 +157,32 @@ ApplicationWindow {
     }
 
     Loader {
-        id: azurePlayerLoader
+        id: cloudPlayerLoader
         active: false
         sourceComponent: Item {
             property alias player: player
 
             AudioOutput {
-                id: azureOutput
+                id: cloudOutput
             }
 
             MediaPlayer {
                 id: player
-                audioOutput: azureOutput
+                audioOutput: cloudOutput
 
                 onMediaStatusChanged: {
-                    if (root.azureActive && mediaStatus === MediaPlayer.EndOfMedia) {
+                    if (root.cloudActive && mediaStatus === MediaPlayer.EndOfMedia) {
+                        root.stopCloudPlayback()
                         backend.playback_finished()
-                        Qt.callLater(root.stopAzurePlayback)
-                    } else if (root.azureActive && mediaStatus === MediaPlayer.InvalidMedia) {
-                        backend.playback_failed("Azure returned audio that Flow could not play.")
-                        Qt.callLater(root.stopAzurePlayback)
+                    } else if (root.cloudActive && mediaStatus === MediaPlayer.InvalidMedia) {
+                        backend.playback_failed("The cloud speech service returned audio that Flow could not play.")
+                        Qt.callLater(root.stopCloudPlayback)
                     }
                 }
                 onErrorOccurred: function(error, errorString) {
-                    if (root.azureActive) {
-                        backend.playback_failed(errorString || "Azure playback ended unexpectedly.")
-                        Qt.callLater(root.stopAzurePlayback)
+                    if (root.cloudActive) {
+                        backend.playback_failed(errorString || "Cloud speech playback ended unexpectedly.")
+                        Qt.callLater(root.stopCloudPlayback)
                     }
                 }
             }
@@ -559,6 +570,28 @@ ApplicationWindow {
                                             onMoved: backend.update_route(modelData.id, "azureSpeechRate", value.toString())
                                         }
                                     }
+                                    ComboBox {
+                                        id: routeGoogleVoicePicker
+                                        visible: settings.speechSource === "google"
+                                        Layout.fillWidth: true
+                                        model: ["Google default voice"].concat(root.googleVoicesFor(modelData.languageTag))
+                                        currentIndex: modelData.googleVoiceName
+                                            ? Math.max(0, model.indexOf(modelData.googleVoiceName))
+                                            : 0
+                                        onActivated: backend.update_route(modelData.id, "googleVoiceName",
+                                            currentIndex === 0 ? "" : currentText)
+                                    }
+                                    RowLayout {
+                                        visible: settings.speechSource === "google"
+                                        Label { text: "Google speech rate" }
+                                        Slider {
+                                            Layout.fillWidth: true
+                                            from: -1
+                                            to: 1
+                                            value: modelData.googleSpeechRate
+                                            onMoved: backend.update_route(modelData.id, "googleSpeechRate", value.toString())
+                                        }
+                                    }
                                     Button {
                                         visible: modelData.id !== "00000000-0000-0000-0000-000000000001"
                                         text: "Remove language"
@@ -594,7 +627,7 @@ ApplicationWindow {
                 }
 
                 GroupBox {
-                    title: "Azure Speech"
+                    title: "Speech"
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
                     Layout.rightMargin: 20
@@ -605,19 +638,22 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             model: [
                                 { value: "system", label: "System voice" },
-                                { value: "azure", label: "Azure voice" }
+                                { value: "azure", label: "Azure voice" },
+                                { value: "google", label: "Google Cloud voice" }
                             ]
                             textRole: "label"
                             valueRole: "value"
-                            currentIndex: settings.speechSource === "azure" ? 1 : 0
+                            currentIndex: settings.speechSource === "azure" ? 1
+                                : settings.speechSource === "google" ? 2 : 0
                             onActivated: backend.update_setting("speechSource", currentValue)
                         }
+
                         Label {
-                            visible: !!settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             text: settings.azureEndpoint ? "Configured for " + settings.azureEndpoint : ""
                         }
                         ComboBox {
-                            visible: !!settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             Layout.fillWidth: true
                             model: [
                                 { value: "multilingual", label: "One multilingual voice" },
@@ -630,7 +666,8 @@ ApplicationWindow {
                         }
                         ComboBox {
                             id: azureVoicePicker
-                            visible: !!settings.azureEndpoint && settings.azureVoiceMode === "multilingual"
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
+                                && settings.azureVoiceMode === "multilingual"
                             Layout.fillWidth: true
                             model: root.azureVoicesFor(settings.defaultLanguageTag, true)
                             currentIndex: Math.max(0, model.indexOf(settings.azureVoiceName))
@@ -638,7 +675,8 @@ ApplicationWindow {
                             onActivated: backend.update_setting("azureVoiceName", currentText)
                         }
                         RowLayout {
-                            visible: !!settings.azureEndpoint && settings.azureVoiceMode === "multilingual"
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
+                                && settings.azureVoiceMode === "multilingual"
                             Label { text: "Azure speech rate" }
                             Slider {
                                 Layout.fillWidth: true
@@ -650,28 +688,21 @@ ApplicationWindow {
                         }
                         TextField {
                             id: endpointField
-                            visible: !settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !settings.azureEndpoint
                             Layout.fillWidth: true
                             placeholderText: "Region or HTTPS endpoint"
                             Accessible.name: placeholderText
                         }
                         TextField {
                             id: keyField
-                            visible: !settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !settings.azureEndpoint
                             Layout.fillWidth: true
                             placeholderText: "Azure Speech subscription key"
                             echoMode: TextInput.Password
                             Accessible.name: placeholderText
                         }
-                        Label {
-                            visible: backend.configuration_error.length > 0
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: palette.accent
-                            text: backend.configuration_error
-                        }
                         Button {
-                            visible: !settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !settings.azureEndpoint
                             text: "Save Azure configuration"
                             enabled: endpointField.text.trim().length > 0 && keyField.text.trim().length > 0
                             onClicked: {
@@ -680,7 +711,7 @@ ApplicationWindow {
                             }
                         }
                         RowLayout {
-                            visible: !!settings.azureEndpoint
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             Button {
                                 text: "Refresh Azure voices"
                                 onClicked: backend.refresh_azure_voices()
@@ -691,15 +722,99 @@ ApplicationWindow {
                             }
                         }
                         Label {
+                            visible: settings.speechSource === "azure"
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
                             text: "Azure receives selected text only when Azure is selected. The subscription key is stored in your desktop keyring."
                         }
                         Button {
+                            visible: settings.speechSource === "azure"
                             flat: true
                             text: "Open Azure Speech resources"
                             onClicked: Qt.openUrlExternally("https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.CognitiveServices%2Faccounts")
+                        }
+
+                        Label {
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            text: "Google Cloud API key configured"
+                        }
+                        ComboBox {
+                            id: googleVoicePicker
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            Layout.fillWidth: true
+                            model: ["Google default voice"].concat(root.googleVoicesFor(settings.defaultLanguageTag))
+                            currentIndex: settings.googleVoiceName
+                                ? Math.max(0, model.indexOf(settings.googleVoiceName))
+                                : 0
+                            onActivated: backend.update_setting("googleVoiceName",
+                                currentIndex === 0 ? "" : currentText)
+                        }
+                        RowLayout {
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            Label { text: "Google speech rate" }
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1
+                                to: 1
+                                value: settings.googleSpeechRate
+                                onMoved: backend.update_setting("googleSpeechRate", value.toString())
+                            }
+                        }
+                        TextField {
+                            id: googleKeyField
+                            visible: settings.speechSource === "google" && !settings.googleApiKeyConfigured
+                            Layout.fillWidth: true
+                            placeholderText: "Google Cloud API key"
+                            echoMode: TextInput.Password
+                            Accessible.name: placeholderText
+                        }
+                        Button {
+                            visible: settings.speechSource === "google" && !settings.googleApiKeyConfigured
+                            text: "Save Google configuration"
+                            enabled: googleKeyField.text.trim().length > 0
+                            onClicked: {
+                                backend.save_google_configuration(googleKeyField.text)
+                                googleKeyField.clear()
+                            }
+                        }
+                        RowLayout {
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            Button {
+                                text: "Refresh Google voices"
+                                onClicked: backend.refresh_google_voices()
+                            }
+                            Button {
+                                text: "Remove Google configuration"
+                                onClicked: backend.clear_google_configuration()
+                            }
+                        }
+                        Label {
+                            visible: settings.speechSource === "google"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: "Google receives selected text only when Google Cloud is selected. The API key is stored in your desktop keyring. Restrict it to the Cloud Text-to-Speech API."
+                        }
+                        Button {
+                            visible: settings.speechSource === "google"
+                            flat: true
+                            text: "Open Google Cloud API credentials"
+                            onClicked: Qt.openUrlExternally("https://console.cloud.google.com/apis/credentials")
+                        }
+                        Button {
+                            visible: settings.speechSource === "google"
+                            flat: true
+                            text: "Enable Cloud Text-to-Speech API"
+                            onClicked: Qt.openUrlExternally("https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")
+                        }
+
+                        Label {
+                            visible: backend.configuration_error.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: palette.accent
+                            text: backend.configuration_error
                         }
                     }
                 }

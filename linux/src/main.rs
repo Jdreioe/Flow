@@ -1,5 +1,6 @@
 mod azure;
 mod backend;
+mod google;
 mod selection;
 mod settings;
 mod shortcuts;
