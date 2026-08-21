@@ -81,6 +81,8 @@ pub struct FlowBackend {
     snapshot_json_changed: qt_signal!(),
     pending_plan_json: qt_property!(QString; NOTIFY pending_plan_json_changed),
     pending_plan_json_changed: qt_signal!(),
+    text_language_override: qt_property!(QString; NOTIFY text_language_override_changed),
+    text_language_override_changed: qt_signal!(),
     shortcut_status: qt_property!(QString; NOTIFY shortcut_status_changed),
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
@@ -130,6 +132,40 @@ pub struct FlowBackend {
     confirm_language_check: qt_method!(
         fn confirm_language_check(&mut self) {
             self.confirm_plan();
+        }
+    ),
+    set_text_language_override: qt_method!(
+        fn set_text_language_override(&mut self, language_tag: QString) {
+            let tag = language_tag.to_string();
+            let tag = if tag.is_empty() { None } else { Some(tag) };
+            if tag == self.text_language_override {
+                return;
+            }
+            self.text_language_override = tag;
+            self.text_language_override_changed();
+            if matches!(
+                self.playback_state,
+                PlaybackState::Preparing | PlaybackState::Playing | PlaybackState::Paused
+            ) && !self.selected_text.is_empty()
+            {
+                let plan = language::plan_with_override(
+                    &self.selected_text,
+                    &self.settings,
+                    self.text_language_override.as_deref(),
+                );
+                if plan.needs_language_check() {
+                    // Restoring Auto can surface uncertain or unconfigured
+                    // sentences, which must go through Language check like
+                    // any fresh capture.
+                    self.cancel_dismiss();
+                    self.stop_active_playback();
+                    self.pending_plan = Some(plan);
+                    self.refresh_pending_plan();
+                    self.set_state(PlaybackState::LanguageCheck);
+                } else {
+                    self.start_plan(self.selected_text.clone(), plan);
+                }
+            }
         }
     ),
     choose_route: qt_method!(
@@ -234,6 +270,7 @@ pub struct FlowBackend {
     selected_text: String,
     plan: Option<Plan>,
     pending_plan: Option<Plan>,
+    text_language_override: Option<String>,
     system_voices: Vec<SystemVoice>,
     azure_voices: Vec<AzureVoice>,
     google_voices: Vec<GoogleVoice>,
@@ -269,6 +306,8 @@ impl Default for FlowBackend {
             snapshot_json_changed: Default::default(),
             pending_plan_json: "null".into(),
             pending_plan_json_changed: Default::default(),
+            text_language_override: QString::default(),
+            text_language_override_changed: Default::default(),
             shortcut_status: "Registering global shortcut…".into(),
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
@@ -286,6 +325,7 @@ impl Default for FlowBackend {
             playback_finished: Default::default(),
             playback_failed: Default::default(),
             confirm_language_check: Default::default(),
+            set_text_language_override: Default::default(),
             choose_route: Default::default(),
             enable_language: Default::default(),
             update_setting: Default::default(),
@@ -304,6 +344,7 @@ impl Default for FlowBackend {
             selected_text: String::new(),
             plan: None,
             pending_plan: None,
+            text_language_override: None,
             system_voices: Vec::new(),
             azure_voices: Vec::new(),
             google_voices: Vec::new(),
@@ -456,6 +497,11 @@ impl FlowBackend {
             self.toggle_pause();
             return;
         }
+
+        // The override lasts for the current selection only; a fresh capture
+        // always starts from Auto again.
+        self.text_language_override = None;
+        self.text_language_override_changed();
 
         let plan = language::plan(&text, &self.settings);
         if plan.needs_language_check() {

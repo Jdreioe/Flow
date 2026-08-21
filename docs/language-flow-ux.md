@@ -54,6 +54,16 @@ screen-center.
   back to estimated timing (character-proportional interpolation).
 - Off by default; a toggle lives in Playback settings.
 
+### Language override
+
+- A language picker lives in the playback popup next to the **Language…**
+  button, defaulting to **Auto**.
+- When a specific language is picked, sentence detection is suspended for
+  the current selection: every sentence is read with that language's route,
+  falling back to the route picker if it has no route.
+- The override lasts until the next capture — nothing sticky survives into
+  the following playback. There is no override UI in settings.
+
 ## Settings
 
 The Language Flow settings section contains exactly two things:

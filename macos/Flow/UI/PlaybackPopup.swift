@@ -43,6 +43,20 @@ struct PlaybackPopupView: View {
                     Text(title)
                         .font(.headline)
                     Spacer()
+                    if showsLanguageOverride {
+                        Picker("Read in", selection: Binding(
+                            get: { model.textLanguageOverride ?? "" },
+                            set: { model.setTextLanguageOverride($0.isEmpty ? nil : $0) },
+                        )) {
+                            Text("Auto").tag("")
+                            ForEach(FlowLanguageOption.allCases) { option in
+                                Text(option.title).tag(option.tag)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 150)
+                        .accessibilityLabel("Language override")
+                    }
                     Button("Stop", action: model.stop)
                         .keyboardShortcut(.escape, modifiers: [])
                         .accessibilityLabel("Stop reading")
@@ -64,6 +78,13 @@ struct PlaybackPopupView: View {
             }
         }
         .padding(20)
+    }
+
+    private var showsLanguageOverride: Bool {
+        switch model.state {
+        case .preparing, .playing, .paused: true
+        default: false
+        }
     }
 
     private var title: String {

@@ -106,6 +106,46 @@ enum LanguageFlow {
     }
 
     static func plan(text: String, settings: FlowSettings) -> Plan {
+        plan(text: text, settings: settings, overrideTag: nil)
+    }
+
+    // Plans a selection with sentence detection suspended: every sentence is
+    // read with the override language's route (falling back to the default
+    // route when that language is not configured) and never needs review.
+    static func plan(text: String, settings: FlowSettings, overrideTag: String?) -> Plan {
+        guard let tag = overrideTag else {
+            return detectedPlan(text: text, settings: settings)
+        }
+        let preparedText = reflow(text)
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = preparedText
+        var sentences: [Sentence] = []
+        tokenizer.enumerateTokens(in: preparedText.startIndex..<preparedText.endIndex) { range, _ in
+            let sentence = String(preparedText[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sentence.isEmpty else { return true }
+            sentences.append(Sentence(
+                text: sentence,
+                detectedLanguageTag: tag,
+                route: settings.languageRoute(for: tag) ?? settings.defaultLanguageRoute,
+                needsReview: false,
+                detectedButUnconfigured: false,
+            ))
+            return true
+        }
+        if sentences.isEmpty {
+            let fallback = singleSentence(text, settings: settings).sentences[0]
+            return Plan(sentences: [Sentence(
+                text: fallback.text,
+                detectedLanguageTag: tag,
+                route: fallback.route,
+                needsReview: false,
+                detectedButUnconfigured: false,
+            )])
+        }
+        return Plan(sentences: sentences)
+    }
+
+    private static func detectedPlan(text: String, settings: FlowSettings) -> Plan {
         let preparedText = reflow(text)
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = preparedText

@@ -87,6 +87,7 @@ final class FlowModel: ObservableObject {
     @Published private(set) var googleVoiceLoadError: String?
     @Published private(set) var languagePlan: LanguageFlow.Plan?
     @Published private(set) var pendingLanguagePlan: LanguageFlow.Plan?
+    @Published private(set) var textLanguageOverride: String?
     @Published var settings: FlowSettings {
         didSet {
             saveSettings()
@@ -220,6 +221,9 @@ final class FlowModel: ObservableObject {
                 pauseOrResume()
                 return
             }
+            // The override lasts for the current selection only; a fresh
+            // capture always starts from Auto again.
+            textLanguageOverride = nil
             let plan = LanguageFlow.plan(text: text, settings: settings)
             if plan.needsLanguageCheck {
                 selectedText = text
@@ -269,6 +273,23 @@ final class FlowModel: ObservableObject {
     func confirmLanguageCheck() {
         guard let plan = pendingLanguagePlan else { return }
         pendingLanguagePlan = nil
+        startReading(text: selectedText, plan: plan)
+    }
+
+    func setTextLanguageOverride(_ tag: String?) {
+        guard tag != textLanguageOverride else { return }
+        textLanguageOverride = tag
+        guard state == .preparing || state == .playing || state == .paused,
+              !selectedText.isEmpty else { return }
+        let plan = LanguageFlow.plan(text: selectedText, settings: settings, overrideTag: tag)
+        if plan.needsLanguageCheck {
+            // Restoring Auto can surface uncertain or unconfigured sentences,
+            // which must go through Language check like any fresh capture.
+            activeSpeech?.stop()
+            pendingLanguagePlan = plan
+            state = .languageCheck
+            return
+        }
         startReading(text: selectedText, plan: plan)
     }
 
