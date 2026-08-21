@@ -80,6 +80,48 @@ APP="$BUILD_DIR/Build/Products/$CONFIGURATION/Flow.app"
 
 echo "Verifying code signature..."
 ENTITLEMENTS="$PROJECT_ROOT/macos/Flow/FlowRelease.entitlements"
+sign_code() {
+    codesign --force \
+        --options runtime \
+        --timestamp \
+        --preserve-metadata=identifier,entitlements \
+        --sign "$SIGN_IDENTITY" \
+        "$1"
+}
+
+verify_developer_id_signature() {
+    codesign --verify --strict "$1"
+    SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$1" 2>&1)"
+    printf '%s\n' "$SIGNATURE_DETAILS" | grep -q "Authority=Developer ID Application:" || {
+        echo "error: $1 is not signed with a Developer ID Application certificate" >&2
+        exit 1
+    }
+    printf '%s\n' "$SIGNATURE_DETAILS" | grep -q "Timestamp=" || {
+        echo "error: $1 does not have a secure timestamp" >&2
+        exit 1
+    }
+}
+
+SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE_FRAMEWORK" ]; then
+    echo "Signing embedded Sparkle helpers..."
+    SPARKLE_VERSION="$SPARKLE_FRAMEWORK/Versions/Current"
+    for COMPONENT in \
+        "$SPARKLE_VERSION"/XPCServices/*.xpc \
+        "$SPARKLE_VERSION"/Updater.app; do
+        [ -e "$COMPONENT" ] || continue
+        sign_code "$COMPONENT"
+        verify_developer_id_signature "$COMPONENT"
+    done
+    for AUTOUPDATE_BINARY in "$SPARKLE_VERSION"/Autoupdate; do
+        [ -e "$AUTOUPDATE_BINARY" ] || continue
+        sign_code "$AUTOUPDATE_BINARY"
+        verify_developer_id_signature "$AUTOUPDATE_BINARY"
+    done
+    sign_code "$SPARKLE_FRAMEWORK"
+    verify_developer_id_signature "$SPARKLE_FRAMEWORK"
+fi
+
 codesign --force \
     --options runtime \
     --timestamp \
@@ -87,6 +129,7 @@ codesign --force \
     --sign "$SIGN_IDENTITY" \
     "$APP"
 codesign --verify --deep --strict "$APP" || { echo "error: signature verification failed" >&2; exit 1; }
+verify_developer_id_signature "$APP"
 echo "Signed with $SIGN_IDENTITY, hardened runtime, secure timestamp."
 codesign -d --entitlements :- "$APP" | grep -q "get-task-allow" && {
     echo "error: debug entitlement still present" >&2
