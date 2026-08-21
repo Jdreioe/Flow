@@ -312,33 +312,6 @@ ApplicationWindow {
                 }
 
                 ComboBox {
-                    id: overridePicker
-                    visible: backend.state === "preparing"
-                        || backend.state === "playing"
-                        || backend.state === "paused"
-                        || backend.state === "awaitingRoute"
-                    Layout.preferredWidth: 180
-                    textRole: "text"
-                    valueRole: "value"
-                    model: {
-                        let items = [{ value: "", text: qsTr("Auto") }]
-                        for (let entry of root.snapshot.supportedLanguages)
-                            items.push({ value: entry[0], text: entry[1] })
-                        return items
-                    }
-                    currentIndex: {
-                        let items = model
-                        for (let index = 0; index < items.length; ++index) {
-                            if (items[index].value === backend.text_language_override)
-                                return index
-                        }
-                        return 0
-                    }
-                    onActivated: backend.set_text_language_override(currentValue)
-                    Accessible.name: qsTr("Language override")
-                }
-
-                ComboBox {
                     id: overrideRoutePicker
                     visible: backend.text_language_override !== ""
                         && backend.override_needs_route
@@ -431,11 +404,37 @@ ApplicationWindow {
                         Accessible.description: "Stop reading and close the Flow popup"
                         onClicked: backend.stop()
                     }
+                    ComboBox {
+                        id: overridePicker
+                        visible: backend.state === "preparing"
+                            || backend.state === "playing"
+                            || backend.state === "paused"
+                            || backend.state === "awaitingRoute"
+                        Layout.preferredWidth: 180
+                        textRole: "text"
+                        valueRole: "value"
+                        model: {
+                            let items = [{ value: "", text: qsTr("Auto") }]
+                            for (let entry of root.snapshot.supportedLanguages)
+                                items.push({ value: entry[0], text: entry[1] })
+                            return items
+                        }
+                        currentIndex: {
+                            let items = model
+                            for (let index = 0; index < items.length; ++index) {
+                                if (items[index].value === backend.text_language_override)
+                                    return index
+                            }
+                            return 0
+                        }
+                        onActivated: backend.set_text_language_override(currentValue)
+                        Accessible.name: qsTr("Language override")
+                    }
                     Button {
-                        visible: (backend.state === "playing" || backend.state === "paused")
-                            && root.detectedLanguages.length > 0
+                        visible: backend.state === "playing" || backend.state === "paused"
                         flat: true
                         text: popup.showLanguages ? qsTr("Hide languages") : qsTr("Language…")
+                        enabled: root.detectedLanguages.length > 0
                         onClicked: popup.showLanguages = !popup.showLanguages
                     }
                     Item { Layout.fillWidth: true }

@@ -530,6 +530,7 @@ impl FlowBackend {
 
     fn handle_selection(&mut self, text: String) {
         // The override lasts until the next capture only.
+        let had_language_override = self.text_language_override.is_some();
         self.text_language_override = None;
         self.text_language_override_changed();
         self.refresh_override_needs_route();
@@ -552,11 +553,14 @@ impl FlowBackend {
                 self.playback_state,
                 PlaybackState::Playing | PlaybackState::Paused
             )
+            && !had_language_override
         {
             self.toggle_pause();
             return;
         }
 
+        // Resetting an override requires a new Auto plan, so replay this
+        // selection instead of resuming the old overridden plan.
         // Detection never blocks playback (ADR 0003): uncertain or
         // unconfigured sentences read with their best-guess route.
         let plan = language::plan(&text, &self.settings).without_review();

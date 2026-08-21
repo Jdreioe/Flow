@@ -105,9 +105,9 @@ Silent, no prompt:
 
 ## Cleanup folded into this effort
 
-- Delete the hardcoded Swift `FlowLanguageOption` enum
-  (`macos/Flow/LanguageFlow/LanguageFlow.swift`); use the snapshot-driven
-  language list from the shared core, as Linux already does.
+- Replace the hardcoded Swift `FlowLanguageOption` enum with the single
+  native `SupportedLanguage` list. It mirrors `core/src/language.rs` until
+  the versioned Swift bridge in ADR 0001 exists.
 - Deduplicate `enable_language` / `add_language` in
   `linux/src/backend.rs`.
 - Update stale settings references in `macos/README.md`.

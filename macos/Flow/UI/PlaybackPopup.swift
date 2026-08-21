@@ -66,14 +66,14 @@ struct PlaybackPopupView: View {
                     .keyboardShortcut(.escape, modifiers: [])
                     .accessibilityLabel("Stop reading")
             }
-            if model.textLanguageOverride != nil, model.overrideNeedsRoute,
-               let firstRouteID = model.languagePlan?.sentences.first?.route.id {
-                Picker("Read as", selection: Binding(
-                    get: { firstRouteID },
-                    set: { model.applyOverrideRoute($0) },
+            if model.textLanguageOverride != nil, model.overrideNeedsRoute {
+                Picker("Read as", selection: Binding<UUID?>(
+                    get: { nil },
+                    set: { if let routeID = $0 { model.applyOverrideRoute(routeID) } },
                 )) {
+                    Text("Read as…").tag(nil as UUID?)
                     ForEach(model.settings.allLanguageRoutes) { route in
-                        Text(route.displayName).tag(route.id)
+                        Text(route.displayName).tag(route.id as UUID?)
                     }
                 }
                 .accessibilityLabel("Read the overridden language as")

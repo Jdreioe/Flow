@@ -199,6 +199,7 @@ final class FlowModel: ObservableObject {
     private func readSelection() {
         dismissTask?.cancel()
         // The override lasts until the next capture only.
+        let hadLanguageOverride = textLanguageOverride != nil
         textLanguageOverride = nil
         overrideNeedsRoute = false
         switch AccessibilitySelectionReader.readFocusedSelection() {
@@ -219,10 +220,12 @@ final class FlowModel: ObservableObject {
                 return
             }
             if normalized == Self.normalized(selectedText), settings.sameSelectionAction == .pauseResume,
-               state == .playing || state == .paused {
+               state == .playing || state == .paused, !hadLanguageOverride {
                 pauseOrResume()
                 return
             }
+            // Resetting an override requires a new Auto plan, so replay this
+            // selection instead of resuming the old overridden plan.
             // Detection never blocks playback (ADR 0003): uncertain or
             // unconfigured sentences read with their best-guess route.
             let plan = LanguageFlow.plan(text: text, settings: settings)
