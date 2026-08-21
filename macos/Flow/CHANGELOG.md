@@ -1,5 +1,12 @@
 # Flow Changelog
 
+## 0.6
+
+- Playback speed control while reading
+- Optional spoken-word highlighting
+- Per-text language override held until cleared
+- Language Flow requires a route before reading unconfigured languages
+
 ## 0.5
 
 - Bug fixes
