@@ -85,6 +85,10 @@ pub struct FlowBackend {
     text_language_override_changed: qt_signal!(),
     override_needs_route: qt_property!(bool; NOTIFY override_needs_route_changed),
     override_needs_route_changed: qt_signal!(),
+    manual_route_needed: qt_property!(bool; NOTIFY manual_route_needed_changed),
+    manual_route_needed_changed: qt_signal!(),
+    manual_route_sentence_text: qt_property!(QString; NOTIFY manual_route_sentence_text_changed),
+    manual_route_sentence_text_changed: qt_signal!(),
     shortcut_status: qt_property!(QString; NOTIFY shortcut_status_changed),
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
@@ -204,11 +208,8 @@ pub struct FlowBackend {
                     if self.selected_text.is_empty() {
                         return;
                     }
-                    // Restoring Auto never blocks: read immediately even
-                    // when detection would flag sentences for review.
-                    let plan =
-                        language::plan(&self.selected_text, &self.settings).without_review();
-                    self.start_plan(self.selected_text.clone(), plan);
+                    let plan = language::plan(&self.selected_text, &self.settings);
+                    self.start_auto_plan(self.selected_text.clone(), plan);
                 }
                 _ => {}
             }
@@ -216,9 +217,9 @@ pub struct FlowBackend {
     ),
     set_override_route: qt_method!(
         fn set_override_route(&mut self, route_id: QString) {
-            let Some(_) = self.text_language_override else {
+            if self.text_language_override.is_none() && !self.manual_route_needed {
                 return;
-            };
+            }
             let Ok(route_id) = Uuid::parse_str(&route_id.to_string()) else {
                 return;
             };
@@ -233,10 +234,30 @@ pub struct FlowBackend {
             let Some(mut plan) = self.plan.take() else {
                 return;
             };
-            for sentence in plan.sentences.iter_mut() {
-                sentence.route = route.clone();
-                sentence.needs_review = false;
+            if self.text_language_override.is_some() {
+                for sentence in plan.sentences.iter_mut() {
+                    sentence.route = route.clone();
+                    sentence.needs_review = false;
+                }
+                self.manual_route_needed = false;
+                self.manual_route_needed_changed();
+                self.plan = Some(plan.clone());
+                self.start_plan(self.selected_text.clone(), plan);
+                return;
             }
+
+            let Some(sentence) = plan.sentences.iter_mut().find(|sentence| sentence.needs_review) else {
+                return;
+            };
+            sentence.route = route;
+            sentence.needs_review = false;
+            if plan.needs_language_check() {
+                self.plan = Some(plan);
+                self.refresh_detected_languages();
+                return;
+            }
+            self.manual_route_needed = false;
+            self.manual_route_needed_changed();
             self.plan = Some(plan.clone());
             self.start_plan(self.selected_text.clone(), plan);
         }
@@ -324,6 +345,7 @@ pub struct FlowBackend {
     plan: Option<Plan>,
     text_language_override: Option<String>,
     override_needs_route: bool,
+    manual_route_needed: bool,
     system_voices: Vec<SystemVoice>,
     azure_voices: Vec<AzureVoice>,
     google_voices: Vec<GoogleVoice>,
@@ -363,6 +385,10 @@ impl Default for FlowBackend {
             text_language_override_changed: Default::default(),
             override_needs_route: false,
             override_needs_route_changed: Default::default(),
+            manual_route_needed: false,
+            manual_route_needed_changed: Default::default(),
+            manual_route_sentence_text: QString::default(),
+            manual_route_sentence_text_changed: Default::default(),
             shortcut_status: "Registering global shortcut…".into(),
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
@@ -399,6 +425,8 @@ impl Default for FlowBackend {
             plan: None,
             text_language_override: None,
             override_needs_route: false,
+            manual_route_needed: false,
+            manual_route_sentence_text: QString::default(),
             system_voices: Vec::new(),
             azure_voices: Vec::new(),
             google_voices: Vec::new(),
@@ -561,10 +589,26 @@ impl FlowBackend {
 
         // Resetting an override requires a new Auto plan, so replay this
         // selection instead of resuming the old overridden plan.
-        // Detection never blocks playback (ADR 0003): uncertain or
-        // unconfigured sentences read with their best-guess route.
-        let plan = language::plan(&text, &self.settings).without_review();
-        self.start_plan(text, plan);
+        let plan = language::plan(&text, &self.settings);
+        self.start_auto_plan(text, plan);
+    }
+
+    fn start_auto_plan(&mut self, text: String, plan: Plan) {
+        if !plan.needs_language_check() {
+            self.manual_route_needed = false;
+            self.manual_route_needed_changed();
+            self.start_plan(text, plan);
+            return;
+        }
+        self.cancel_dismiss();
+        self.stop_active_playback();
+        self.selected_text = text;
+        self.plan = Some(plan);
+        self.manual_route_needed = true;
+        self.manual_route_needed_changed();
+        self.refresh_detected_languages();
+        self.set_state(PlaybackState::AwaitingRoute);
+        self.set_popup_visible(true);
     }
 
     fn refresh_detected_languages(&mut self) {
@@ -581,6 +625,14 @@ impl FlowBackend {
         self.detected_languages_json =
             serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()).into();
         self.detected_languages_json_changed();
+        self.manual_route_sentence_text = self
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.sentences.iter().find(|sentence| sentence.needs_review))
+            .map(|sentence| sentence.text.clone())
+            .unwrap_or_default()
+            .into();
+        self.manual_route_sentence_text_changed();
     }
 
     fn refresh_override_needs_route(&mut self) {
@@ -597,6 +649,10 @@ impl FlowBackend {
     fn start_plan(&mut self, text: String, plan: Plan) {
         self.cancel_dismiss();
         self.stop_active_playback();
+        if self.manual_route_needed {
+            self.manual_route_needed = false;
+            self.manual_route_needed_changed();
+        }
         self.selected_text = text;
         self.plan = Some(plan.clone());
         self.refresh_detected_languages();
@@ -833,7 +889,34 @@ impl FlowBackend {
             .any(|route| language_base(&route.language_tag) == language_base(language_tag));
         if supported && !duplicate {
             let mut route = LanguageRoute::new(language_tag);
-            route.azure_voice_name = Some(self.settings.azure_voice_name.clone());
+            route.system_voice_name = self
+                .system_voices
+                .iter()
+                .find(|voice| language_base(&voice.language_tag) == language_base(language_tag))
+                .map(|voice| voice.name.clone());
+            route.azure_voice_name = self
+                .azure_voices
+                .iter()
+                .find(|voice| {
+                    language_base(&voice.locale) == language_base(language_tag)
+                        || voice
+                            .secondary_locales
+                            .iter()
+                            .any(|locale| language_base(locale) == language_base(language_tag))
+                })
+                .map(|voice| voice.short_name.clone())
+                .or_else(|| Some(self.settings.azure_voice_name.clone()));
+            route.google_voice_name = self
+                .google_voices
+                .iter()
+                .find(|voice| {
+                    voice
+                        .language_codes
+                        .iter()
+                        .any(|locale| language_base(locale) == language_base(language_tag))
+                })
+                .map(|voice| voice.name.clone());
+            route.azure_speech_rate = self.settings.azure_speech_rate;
             route.google_speech_rate = self.settings.google_speech_rate;
             self.settings.language_routes.push(route);
             self.persist_settings();

@@ -2,9 +2,6 @@ import Foundation
 import NaturalLanguage
 
 enum LanguageFlow {
-    static let uncertainConfidence = 0.75
-    static let uncertainLead = 0.15
-
     struct Sentence: Identifiable {
         let id = UUID()
         let text: String
@@ -153,17 +150,10 @@ enum LanguageFlow {
         tokenizer.enumerateTokens(in: preparedText.startIndex..<preparedText.endIndex) { range, _ in
             let sentence = String(preparedText[range]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !sentence.isEmpty else { return true }
-            let detection = detect(sentence)
-            // Detect from the first reading. A detected, unconfigured language must
-            // open Language check so the person can enable it; otherwise the first
-            // added route can never be discovered.
-            let switchingIsActive = settings.languageSwitchingEnabled
-            let route = switchingIsActive
-                ? detection.tag.flatMap { settings.languageRoute(for: $0) }
-                : nil
+            let detection = detect(sentence, settings: settings)
+            let route = detection.route
             let configured = route != nil
-            let uncertain = detection.confidence < uncertainConfidence || detection.lead < uncertainLead
-            let shouldCheck = switchingIsActive && (uncertain || !configured)
+            let shouldCheck = !configured
             sentences.append(Sentence(
                 text: sentence,
                 detectedLanguageTag: detection.tag,
@@ -187,14 +177,28 @@ enum LanguageFlow {
         return plan
     }
 
-    private static func detect(_ text: String) -> (tag: String?, confidence: Double, lead: Double) {
+    private static func detect(
+        _ text: String,
+        settings: FlowSettings,
+    ) -> (tag: String?, confidence: Double, lead: Double, route: FlowSettings.LanguageRoute?) {
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
-        let hypotheses = recognizer.languageHypotheses(withMaximum: 2)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: SupportedLanguage.all.count)
             .sorted { $0.value > $1.value }
-        guard let first = hypotheses.first else { return (nil, 0, 0) }
+        guard let first = hypotheses.first else { return (nil, 0, 0, nil) }
+        let detectedTag = SupportedLanguage.canonicalTag(for: first.key.rawValue)
         let second = hypotheses.dropFirst().first?.value ?? 0
-        return (SupportedLanguage.canonicalTag(for: first.key.rawValue), first.value, first.value - second)
+        var configured: (String, FlowSettings.LanguageRoute)?
+        for hypothesis in hypotheses {
+            let tag = SupportedLanguage.canonicalTag(for: hypothesis.key.rawValue)
+            guard SupportedLanguage.sharesAutomaticLanguageGroup(detectedTag, tag) else { continue }
+            if let route = settings.languageRoute(for: tag) {
+                configured = (tag, route)
+                break
+            }
+        }
+        let tag = configured?.0 ?? detectedTag
+        return (tag, first.value, first.value - second, configured?.1)
     }
 }
 
@@ -225,5 +229,14 @@ struct SupportedLanguage: Identifiable, Hashable {
     static func canonicalTag(for detectedTag: String) -> String {
         let base = detectedTag.split(separator: "-").first?.lowercased()
         return all.first { $0.tag.split(separator: "-").first?.lowercased() == base }?.tag ?? detectedTag
+    }
+
+    static func sharesAutomaticLanguageGroup(_ detectedTag: String, _ candidateTag: String) -> Bool {
+        if detectedTag.caseInsensitiveCompare(candidateTag) == .orderedSame {
+            return true
+        }
+
+        let scandinavian = ["da-DK", "sv-SE", "nb-NO"]
+        return scandinavian.contains(detectedTag) && scandinavian.contains(candidateTag)
     }
 }

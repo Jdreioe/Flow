@@ -66,7 +66,13 @@ struct PlaybackPopupView: View {
                     .keyboardShortcut(.escape, modifiers: [])
                     .accessibilityLabel("Stop reading")
             }
-            if model.textLanguageOverride != nil, model.overrideNeedsRoute {
+            if (model.textLanguageOverride != nil && model.overrideNeedsRoute) || model.manualRouteNeeded {
+                if model.manualRouteNeeded, let sentence = model.manualRouteSentenceText {
+                    Text(sentence)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Sentence requiring a voice choice")
+                }
                 Picker("Read as", selection: Binding<UUID?>(
                     get: { nil },
                     set: { if let routeID = $0 { model.applyOverrideRoute(routeID) } },
@@ -76,7 +82,9 @@ struct PlaybackPopupView: View {
                         Text(route.displayName).tag(route.id as UUID?)
                     }
                 }
-                .accessibilityLabel("Read the overridden language as")
+                .accessibilityLabel(model.manualRouteNeeded
+                    ? "Read this sentence as"
+                    : "Read the overridden language as")
             }
             if case let .message(message) = model.state {
                 Text(message)
@@ -95,7 +103,9 @@ struct PlaybackPopupView: View {
                 }
             }
             if showsAwaitingRouteNotice {
-                Text("Pick a voice for \(languageName(model.textLanguageOverride ?? "")) to start reading.")
+                Text(model.manualRouteNeeded
+                    ? "Choose how Flow should read this sentence before playback starts."
+                    : "Choose how Flow should read this selection before playback starts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -123,7 +133,7 @@ struct PlaybackPopupView: View {
     }
 
     private var showsAwaitingRouteNotice: Bool {
-        model.state == .awaitingRoute && model.overrideNeedsRoute
+        model.state == .awaitingRoute && (model.overrideNeedsRoute || model.manualRouteNeeded)
     }
 
     private func languageName(_ tag: String) -> String {
