@@ -38,7 +38,7 @@ enum PlaybackState {
     Preparing,
     Playing,
     Paused,
-    LanguageCheck,
+    AwaitingRoute,
     Finished,
     Message,
 }
@@ -50,7 +50,7 @@ impl PlaybackState {
             Self::Preparing => "preparing",
             Self::Playing => "playing",
             Self::Paused => "paused",
-            Self::LanguageCheck => "languageCheck",
+            Self::AwaitingRoute => "awaitingRoute",
             Self::Finished => "finished",
             Self::Message => "message",
         }
@@ -79,8 +79,8 @@ pub struct FlowBackend {
     message_changed: qt_signal!(),
     snapshot_json: qt_property!(QString; NOTIFY snapshot_json_changed),
     snapshot_json_changed: qt_signal!(),
-    pending_plan_json: qt_property!(QString; NOTIFY pending_plan_json_changed),
-    pending_plan_json_changed: qt_signal!(),
+    detected_languages_json: qt_property!(QString; NOTIFY detected_languages_json_changed),
+    detected_languages_json_changed: qt_signal!(),
     text_language_override: qt_property!(QString; NOTIFY text_language_override_changed),
     text_language_override_changed: qt_signal!(),
     override_needs_route: qt_property!(bool; NOTIFY override_needs_route_changed),
@@ -131,9 +131,31 @@ pub struct FlowBackend {
             self.show_message(error.to_string());
         }
     ),
-    confirm_language_check: qt_method!(
-        fn confirm_language_check(&mut self) {
-            self.confirm_plan();
+    set_route_for_language: qt_method!(
+        fn set_route_for_language(&mut self, language_tag: QString, route_id: QString) {
+            let Ok(route_id) = Uuid::parse_str(&route_id.to_string()) else {
+                return;
+            };
+            let Some(route) = self
+                .settings
+                .all_language_routes()
+                .into_iter()
+                .find(|route| route.id == route_id)
+            else {
+                return;
+            };
+            let tag = language_tag.to_string();
+            let Some(mut plan) = self.plan.take() else {
+                return;
+            };
+            for sentence in plan.sentences.iter_mut() {
+                if sentence.detected_language_tag.as_deref() == Some(tag.as_str()) {
+                    sentence.route = route.clone();
+                    sentence.needs_review = false;
+                }
+            }
+            self.plan = Some(plan.clone());
+            self.start_plan(self.selected_text.clone(), plan);
         }
     ),
     set_text_language_override: qt_method!(
@@ -143,41 +165,52 @@ pub struct FlowBackend {
             if tag == self.text_language_override {
                 return;
             }
-            self.text_language_override = tag;
+            self.text_language_override = tag.clone();
             self.text_language_override_changed();
             self.refresh_override_needs_route();
-            if !self.selected_text.is_empty() {
-                match self.playback_state {
+            match (self.playback_state, &tag) {
+                (
                     PlaybackState::Preparing
                     | PlaybackState::Playing
-                    | PlaybackState::Paused => {
-                        // Restoring Auto never blocks: read immediately even
-                        // when detection would flag sentences for review.
-                        let plan = match &self.text_language_override {
-                            Some(tag) => language::plan_with_override(
-                                &self.selected_text,
-                                &self.settings,
-                                Some(tag),
-                            ),
-                            None => language::plan(&self.selected_text, &self.settings)
-                                .without_review(),
-                        };
+                    | PlaybackState::Paused
+                    | PlaybackState::AwaitingRoute,
+                    Some(tag),
+                ) => {
+                    if self.selected_text.is_empty() {
+                        return;
+                    }
+                    let plan =
+                        language::plan_with_override(&self.selected_text, &self.settings, Some(tag));
+                    if self.override_needs_route {
+                        // Never speak with a guessed voice: hold playback
+                        // until a route is chosen for this language.
+                        self.cancel_dismiss();
+                        self.stop_active_playback();
+                        self.plan = Some(plan);
+                        self.refresh_detected_languages();
+                        self.set_state(PlaybackState::AwaitingRoute);
+                        self.set_popup_visible(true);
+                    } else {
                         self.start_plan(self.selected_text.clone(), plan);
                     }
-                    PlaybackState::LanguageCheck => {
-                        let plan = match &self.text_language_override {
-                            Some(tag) => language::plan_with_override(
-                                &self.selected_text,
-                                &self.settings,
-                                Some(tag),
-                            ),
-                            None => language::plan(&self.selected_text, &self.settings),
-                        };
-                        self.pending_plan = Some(plan);
-                        self.refresh_pending_plan();
-                    }
-                    _ => {}
                 }
+                (
+                    PlaybackState::Preparing
+                    | PlaybackState::Playing
+                    | PlaybackState::Paused
+                    | PlaybackState::AwaitingRoute,
+                    None,
+                ) => {
+                    if self.selected_text.is_empty() {
+                        return;
+                    }
+                    // Restoring Auto never blocks: read immediately even
+                    // when detection would flag sentences for review.
+                    let plan =
+                        language::plan(&self.selected_text, &self.settings).without_review();
+                    self.start_plan(self.selected_text.clone(), plan);
+                }
+                _ => {}
             }
         }
     ),
@@ -197,42 +230,15 @@ pub struct FlowBackend {
             let Some(route) = route else {
                 return;
             };
-            if self.pending_plan.is_some() {
-                let mut plan = self.pending_plan.take().unwrap();
-                for sentence in plan.sentences.iter_mut() {
-                    sentence.route = route.clone();
-                    sentence.needs_review = false;
-                }
-                self.pending_plan = Some(plan);
-                self.refresh_pending_plan();
-            } else if let Some(mut plan) = self.plan.take() {
-                for sentence in plan.sentences.iter_mut() {
-                    sentence.route = route.clone();
-                    sentence.needs_review = false;
-                }
-                self.plan = Some(plan.clone());
-                self.start_plan(self.selected_text.clone(), plan);
+            let Some(mut plan) = self.plan.take() else {
+                return;
+            };
+            for sentence in plan.sentences.iter_mut() {
+                sentence.route = route.clone();
+                sentence.needs_review = false;
             }
-        }
-    ),
-    choose_route: qt_method!(
-        fn choose_route(
-            &mut self,
-            sentence_id: QString,
-            route_id: QString,
-            apply_to_language: bool,
-        ) {
-            self.choose_language_route(
-                &sentence_id.to_string(),
-                &route_id.to_string(),
-                apply_to_language,
-            );
-        }
-    ),
-    enable_language: qt_method!(
-        fn enable_language(&mut self, language_tag: QString) {
-            self.add_language_route(&language_tag.to_string());
-            self.show_settings();
+            self.plan = Some(plan.clone());
+            self.start_plan(self.selected_text.clone(), plan);
         }
     ),
     update_setting: qt_method!(
@@ -316,7 +322,6 @@ pub struct FlowBackend {
     playback_state: PlaybackState,
     selected_text: String,
     plan: Option<Plan>,
-    pending_plan: Option<Plan>,
     text_language_override: Option<String>,
     override_needs_route: bool,
     system_voices: Vec<SystemVoice>,
@@ -352,8 +357,8 @@ impl Default for FlowBackend {
             message_changed: Default::default(),
             snapshot_json: snapshot_json.into(),
             snapshot_json_changed: Default::default(),
-            pending_plan_json: "null".into(),
-            pending_plan_json_changed: Default::default(),
+            detected_languages_json: "[]".into(),
+            detected_languages_json_changed: Default::default(),
             text_language_override: QString::default(),
             text_language_override_changed: Default::default(),
             override_needs_route: false,
@@ -374,11 +379,9 @@ impl Default for FlowBackend {
             stop: Default::default(),
             playback_finished: Default::default(),
             playback_failed: Default::default(),
-            confirm_language_check: Default::default(),
+            set_route_for_language: Default::default(),
             set_text_language_override: Default::default(),
             set_override_route: Default::default(),
-            choose_route: Default::default(),
-            enable_language: Default::default(),
             update_setting: Default::default(),
             add_language: Default::default(),
             remove_language: Default::default(),
@@ -394,7 +397,6 @@ impl Default for FlowBackend {
             playback_state: PlaybackState::Hidden,
             selected_text: String::new(),
             plan: None,
-            pending_plan: None,
             text_language_override: None,
             override_needs_route: false,
             system_voices: Vec::new(),
@@ -527,6 +529,11 @@ impl FlowBackend {
     }
 
     fn handle_selection(&mut self, text: String) {
+        // The override lasts until the next capture only.
+        self.text_language_override = None;
+        self.text_language_override_changed();
+        self.refresh_override_needs_route();
+
         let normalized = normalize(&text);
         if normalized.is_empty() {
             self.show_message(format!(
@@ -550,26 +557,26 @@ impl FlowBackend {
             return;
         }
 
-        // The override lasts for the current selection only; a fresh capture
-        // always starts from Auto again. The same-selection pause/resume
-        // early-return above intentionally preserves the override: the text
-        // did not change.
-        self.text_language_override = None;
-        self.text_language_override_changed();
-        self.refresh_override_needs_route();
+        // Detection never blocks playback (ADR 0003): uncertain or
+        // unconfigured sentences read with their best-guess route.
+        let plan = language::plan(&text, &self.settings).without_review();
+        self.start_plan(text, plan);
+    }
 
-        let plan = language::plan(&text, &self.settings);
-        if plan.needs_language_check() {
-            self.cancel_dismiss();
-            self.stop_active_playback();
-            self.selected_text = text;
-            self.pending_plan = Some(plan);
-            self.refresh_pending_plan();
-            self.set_state(PlaybackState::LanguageCheck);
-            self.set_popup_visible(true);
-        } else {
-            self.start_plan(text, plan);
+    fn refresh_detected_languages(&mut self) {
+        let mut tags: Vec<String> = Vec::new();
+        if let Some(plan) = &self.plan {
+            for sentence in &plan.sentences {
+                if let Some(tag) = &sentence.detected_language_tag {
+                    if !tags.contains(tag) {
+                        tags.push(tag.clone());
+                    }
+                }
+            }
         }
+        self.detected_languages_json =
+            serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()).into();
+        self.detected_languages_json_changed();
     }
 
     fn refresh_override_needs_route(&mut self) {
@@ -583,21 +590,12 @@ impl FlowBackend {
         }
     }
 
-    fn confirm_plan(&mut self) {
-        let Some(plan) = self.pending_plan.take() else {
-            return;
-        };
-        self.refresh_pending_plan();
-        self.start_plan(self.selected_text.clone(), plan);
-    }
-
     fn start_plan(&mut self, text: String, plan: Plan) {
         self.cancel_dismiss();
         self.stop_active_playback();
         self.selected_text = text;
         self.plan = Some(plan.clone());
-        self.pending_plan = None;
-        self.refresh_pending_plan();
+        self.refresh_detected_languages();
         self.set_state(PlaybackState::Preparing);
         self.set_popup_visible(true);
         let generation = self.playback_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -752,8 +750,7 @@ impl FlowBackend {
         self.stop_active_playback();
         self.selected_text.clear();
         self.plan = None;
-        self.pending_plan = None;
-        self.refresh_pending_plan();
+        self.refresh_detected_languages();
         self.set_state(PlaybackState::Hidden);
         self.set_popup_visible(false);
     }
@@ -786,8 +783,7 @@ impl FlowBackend {
         self.stop_active_playback();
         self.selected_text.clear();
         self.plan = None;
-        self.pending_plan = None;
-        self.refresh_pending_plan();
+        self.refresh_detected_languages();
         self.message = message.into().into();
         self.message_changed();
         self.set_state(PlaybackState::Message);
@@ -820,41 +816,6 @@ impl FlowBackend {
 
     fn cancel_dismiss(&self) {
         self.dismiss_generation.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn choose_language_route(&mut self, sentence_id: &str, route_id: &str, apply: bool) {
-        let (Ok(sentence_id), Ok(route_id)) =
-            (Uuid::parse_str(sentence_id), Uuid::parse_str(route_id))
-        else {
-            return;
-        };
-        let Some(route) = self
-            .settings
-            .all_language_routes()
-            .into_iter()
-            .find(|route| route.id == route_id)
-        else {
-            return;
-        };
-        let Some(plan) = self.pending_plan.as_mut() else {
-            return;
-        };
-        let selected_language = plan
-            .sentences
-            .iter()
-            .find(|sentence| sentence.id == sentence_id)
-            .and_then(|sentence| sentence.detected_language_tag.clone());
-        for sentence in &mut plan.sentences {
-            if sentence.id == sentence_id
-                || apply
-                    && selected_language.is_some()
-                    && sentence.detected_language_tag == selected_language
-            {
-                sentence.route = route.clone();
-                sentence.needs_review = false;
-            }
-        }
-        self.refresh_pending_plan();
     }
 
     fn add_language_route(&mut self, language_tag: &str) {
@@ -1135,16 +1096,6 @@ impl FlowBackend {
         })
         .into();
         self.snapshot_json_changed();
-    }
-
-    fn refresh_pending_plan(&mut self) {
-        self.pending_plan_json = self
-            .pending_plan
-            .as_ref()
-            .map(serialize)
-            .unwrap_or_else(|| "null".into())
-            .into();
-        self.pending_plan_json_changed();
     }
 
     fn set_state(&mut self, state: PlaybackState) {

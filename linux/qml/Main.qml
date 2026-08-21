@@ -15,9 +15,7 @@ ApplicationWindow {
 
     property var snapshot: JSON.parse(backend.snapshot_json)
     property var settings: snapshot.settings
-    property var pendingPlan: backend.pending_plan_json === "null"
-        ? null
-        : JSON.parse(backend.pending_plan_json)
+    property var detectedLanguages: JSON.parse(backend.detected_languages_json)
     property bool cloudActive: false
 
     function cloudPlayer() {
@@ -253,14 +251,16 @@ ApplicationWindow {
         id: popup
         visible: backend.popup_visible
         width: 520
-        height: backend.state === "languageCheck" ? 520 : 210
+        height: 210
         minimumWidth: 420
         color: "transparent"
-        title: backend.state === "languageCheck" ? "Flow language check" : "Flow playback"
+        title: "Flow playback"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-            | (backend.state === "languageCheck" ? 0 : Qt.WindowDoesNotAcceptFocus)
+            | Qt.WindowDoesNotAcceptFocus
         x: Math.round((Screen.width - width) / 2)
         y: Math.round(Screen.height * 0.12)
+
+        property bool showLanguages: false
 
         Rectangle {
             anchors.fill: parent
@@ -281,7 +281,7 @@ ApplicationWindow {
                         case "preparing": return "Preparing playback"
                         case "playing": return "Reading"
                         case "paused": return "Paused"
-                        case "languageCheck": return "Language check"
+                        case "awaitingRoute": return "Choose a voice"
                         case "finished": return "Finished"
                         default: return "Flow"
                         }
@@ -289,6 +289,13 @@ ApplicationWindow {
                     font.pixelSize: 20
                     font.bold: true
                     Accessible.name: text
+                }
+
+                Label {
+                    visible: backend.state === "awaitingRoute"
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
                 }
 
                 Label {
@@ -309,7 +316,7 @@ ApplicationWindow {
                     visible: backend.state === "preparing"
                         || backend.state === "playing"
                         || backend.state === "paused"
-                        || backend.state === "languageCheck"
+                        || backend.state === "awaitingRoute"
                     Layout.preferredWidth: 180
                     textRole: "text"
                     valueRole: "value"
@@ -362,25 +369,20 @@ ApplicationWindow {
                 }
 
                 ScrollView {
-                    visible: backend.state === "languageCheck"
+                    visible: popup.showLanguages
+                        && root.detectedLanguages.length > 0
+                        && (backend.state === "playing" || backend.state === "paused"
+                            || backend.state === "awaitingRoute")
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    Layout.maximumHeight: 220
                     clip: true
 
                     Column {
                         width: parent.width
                         spacing: 12
 
-                        Label {
-                            width: parent.width
-                            wrapMode: Text.WordWrap
-                            text: "Choose how Flow should read these sentences before playback starts."
-                        }
-
                         Repeater {
-                            model: pendingPlan
-                                ? pendingPlan.sentences.filter(function(sentence) { return sentence.needsReview })
-                                : []
+                            model: root.detectedLanguages
 
                             Frame {
                                 required property var modelData
@@ -392,49 +394,22 @@ ApplicationWindow {
 
                                     Label {
                                         Layout.fillWidth: true
-                                        maximumLineCount: 2
-                                        elide: Text.ElideRight
-                                        wrapMode: Text.WordWrap
-                                        text: modelData.text
-                                    }
-                                    Label {
-                                        visible: modelData.detectedButUnconfigured
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        text: "Flow detected " + root.languageName(modelData.detectedLanguageTag) + ", but it is not enabled."
-                                    }
-                                    Button {
-                                        visible: modelData.detectedButUnconfigured
-                                        text: "Enable " + root.languageName(modelData.detectedLanguageTag) + " in Settings"
-                                        onClicked: backend.enable_language(modelData.detectedLanguageTag)
+                                        text: root.languageName(modelData)
+                                        font.bold: true
                                     }
                                     ComboBox {
-                                        id: routePicker
+                                        id: languageRoutePicker
                                         Layout.fillWidth: true
                                         model: root.allRoutes()
                                         textRole: "languageTag"
                                         valueRole: "id"
-                                        currentIndex: {
-                                            let routes = root.allRoutes()
-                                            for (let index = 0; index < routes.length; ++index) {
-                                                if (routes[index].id === modelData.route.id)
-                                                    return index
-                                            }
-                                            return 0
-                                        }
-                                        displayText: "Read as " + root.languageName(model.length > 0 ? model[currentIndex].languageTag : settings.defaultLanguageTag)
+                                        displayText: qsTr("Read as ") + root.languageName(modelData)
                                         delegate: ItemDelegate {
                                             required property var modelData
-                                            width: routePicker.width
+                                            width: languageRoutePicker.width
                                             text: root.languageName(modelData.languageTag)
                                         }
-                                        onActivated: backend.choose_route(modelData.id, currentValue, false)
-                                    }
-                                    Button {
-                                        visible: !!modelData.detectedLanguageTag
-                                        flat: true
-                                        text: "Use this choice for all " + root.languageName(modelData.detectedLanguageTag) + " sentences"
-                                        onClicked: backend.choose_route(modelData.id, routePicker.currentValue, true)
+                                        onActivated: backend.set_route_for_language(modelData, currentValue)
                                     }
                                 }
                             }
@@ -442,29 +417,32 @@ ApplicationWindow {
                     }
                 }
 
-                Item { Layout.fillHeight: backend.state !== "languageCheck" }
+                Item { Layout.fillHeight: true }
 
                 RowLayout {
                     Layout.fillWidth: true
-                    visible: backend.state === "playing" || backend.state === "paused"
-                        || backend.state === "languageCheck"
+                    visible: backend.state === "preparing"
+                        || backend.state === "playing"
+                        || backend.state === "paused"
+                        || backend.state === "awaitingRoute"
 
                     Button {
                         text: "Stop"
                         Accessible.description: "Stop reading and close the Flow popup"
                         onClicked: backend.stop()
                     }
+                    Button {
+                        visible: (backend.state === "playing" || backend.state === "paused")
+                            && root.detectedLanguages.length > 0
+                        flat: true
+                        text: popup.showLanguages ? qsTr("Hide languages") : qsTr("Language…")
+                        onClicked: popup.showLanguages = !popup.showLanguages
+                    }
                     Item { Layout.fillWidth: true }
                     Button {
                         visible: backend.state === "playing" || backend.state === "paused"
                         text: backend.state === "paused" ? "Resume" : "Pause"
                         onClicked: backend.pause_or_resume()
-                    }
-                    Button {
-                        visible: backend.state === "languageCheck"
-                        text: "Start reading"
-                        highlighted: true
-                        onClicked: backend.confirm_language_check()
                     }
                 }
             }

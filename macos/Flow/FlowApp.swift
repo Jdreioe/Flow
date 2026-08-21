@@ -71,7 +71,7 @@ final class FlowModel: ObservableObject {
         case preparing
         case playing
         case paused
-        case languageCheck
+        case awaitingRoute
         case finished
         case message(String)
     }
@@ -86,7 +86,6 @@ final class FlowModel: ObservableObject {
     @Published private(set) var googleVoices: [GoogleVoiceCatalog.Voice] = []
     @Published private(set) var googleVoiceLoadError: String?
     @Published private(set) var languagePlan: LanguageFlow.Plan?
-    @Published private(set) var pendingLanguagePlan: LanguageFlow.Plan?
     @Published private(set) var textLanguageOverride: String?
     @Published private(set) var overrideNeedsRoute = false
     @Published var settings: FlowSettings {
@@ -193,13 +192,15 @@ final class FlowModel: ObservableObject {
         activeSpeech?.stop()
         selectedText = ""
         languagePlan = nil
-        pendingLanguagePlan = nil
         state = .hidden
         onPopupVisibilityChanged?(false)
     }
 
     private func readSelection() {
         dismissTask?.cancel()
+        // The override lasts until the next capture only.
+        textLanguageOverride = nil
+        overrideNeedsRoute = false
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
             showMessage("Flow needs Accessibility permission to read selected text.")
@@ -222,58 +223,30 @@ final class FlowModel: ObservableObject {
                 pauseOrResume()
                 return
             }
-            // The override lasts for the current selection only; a fresh
-            // capture always starts from Auto again.
-            textLanguageOverride = nil
+            // Detection never blocks playback (ADR 0003): uncertain or
+            // unconfigured sentences read with their best-guess route.
             let plan = LanguageFlow.plan(text: text, settings: settings)
-            if plan.needsLanguageCheck {
-                selectedText = text
-                pendingLanguagePlan = plan
-                state = .languageCheck
-                onPopupVisibilityChanged?(true)
-                return
-            }
-            startReading(text: text, plan: plan)
+            startReading(text: text, plan: LanguageFlow.withoutReview(plan))
         }
     }
 
-    func chooseLanguageRoute(_ routeID: UUID, for sentenceID: UUID) {
-        guard var plan = pendingLanguagePlan,
-              let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }),
-              let index = plan.sentences.firstIndex(where: { $0.id == sentenceID }) else { return }
-        plan.sentences[index].route = route
-        plan.sentences[index].needsReview = false
-        pendingLanguagePlan = plan
+    var detectedLanguages: [String] {
+        var tags: [String] = []
+        for sentence in languagePlan?.sentences ?? [] {
+            if let tag = sentence.detectedLanguageTag, !tags.contains(tag) {
+                tags.append(tag)
+            }
+        }
+        return tags
     }
 
-    func chooseLanguageRoute(_ routeID: UUID, forAllDetectedLanguage languageTag: String) {
-        guard var plan = pendingLanguagePlan,
-              let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }) else { return }
+    func setRoute(_ routeID: UUID, forAllDetectedLanguage languageTag: String) {
+        guard let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }),
+              var plan = languagePlan else { return }
         for index in plan.sentences.indices where plan.sentences[index].detectedLanguageTag == languageTag {
             plan.sentences[index].route = route
             plan.sentences[index].needsReview = false
         }
-        pendingLanguagePlan = plan
-    }
-
-    func enableDetectedLanguage(for sentenceID: UUID) {
-        guard let sentence = pendingLanguagePlan?.sentences.first(where: { $0.id == sentenceID }),
-              let languageTag = sentence.detectedLanguageTag,
-              !settings.languageRoutes.contains(where: { $0.languageTag == languageTag }) else { return }
-        settings.languageRoutes.append(.init(
-            languageTag: languageTag,
-            systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier,
-            azureVoiceName: settings.azureVoiceName,
-            azureSpeechRate: settings.azureSpeechRate,
-            googleVoiceName: nil,
-            googleSpeechRate: settings.googleSpeechRate,
-        ))
-        openSettings()
-    }
-
-    func confirmLanguageCheck() {
-        guard let plan = pendingLanguagePlan else { return }
-        pendingLanguagePlan = nil
         startReading(text: selectedText, plan: plan)
     }
 
@@ -282,25 +255,26 @@ final class FlowModel: ObservableObject {
         textLanguageOverride = tag
         overrideNeedsRoute = tag.map { settings.languageRoute(for: $0) == nil } ?? false
         switch state {
-        case .preparing, .playing, .paused:
+        case .preparing, .playing, .paused, .awaitingRoute:
             guard !selectedText.isEmpty else { return }
-            let plan: LanguageFlow.Plan
             if let tag {
-                plan = LanguageFlow.plan(text: selectedText, settings: settings, overrideTag: tag)
+                let plan = LanguageFlow.plan(text: selectedText, settings: settings, overrideTag: tag)
+                if overrideNeedsRoute {
+                    // Never speak with a guessed voice: hold playback until
+                    // a route is chosen for this language.
+                    activeSpeech?.stop()
+                    languagePlan = plan
+                    state = .awaitingRoute
+                    onPopupVisibilityChanged?(true)
+                } else {
+                    startReading(text: selectedText, plan: plan)
+                }
             } else {
                 // Restoring Auto never blocks: read immediately even when
                 // detection would flag sentences for review (ADR 0003).
-                plan = LanguageFlow.withoutReview(
+                let plan = LanguageFlow.withoutReview(
                     LanguageFlow.plan(text: selectedText, settings: settings))
-            }
-            startReading(text: selectedText, plan: plan)
-        case .languageCheck:
-            guard !selectedText.isEmpty else { return }
-            if let tag {
-                pendingLanguagePlan = LanguageFlow.plan(
-                    text: selectedText, settings: settings, overrideTag: tag)
-            } else {
-                pendingLanguagePlan = LanguageFlow.plan(text: selectedText, settings: settings)
+                startReading(text: selectedText, plan: plan)
             }
         default:
             break
@@ -309,22 +283,13 @@ final class FlowModel: ObservableObject {
 
     func applyOverrideRoute(_ routeID: UUID) {
         guard textLanguageOverride != nil,
-              let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }) else { return }
-        if state == .languageCheck {
-            guard var plan = pendingLanguagePlan else { return }
-            for index in plan.sentences.indices {
-                plan.sentences[index].route = route
-                plan.sentences[index].needsReview = false
-            }
-            pendingLanguagePlan = plan
-        } else {
-            guard var plan = languagePlan else { return }
-            for index in plan.sentences.indices {
-                plan.sentences[index].route = route
-                plan.sentences[index].needsReview = false
-            }
-            startReading(text: selectedText, plan: plan)
+              let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }),
+              var plan = languagePlan else { return }
+        for index in plan.sentences.indices {
+            plan.sentences[index].route = route
+            plan.sentences[index].needsReview = false
         }
+        startReading(text: selectedText, plan: plan)
     }
 
     private func startReading(text: String, plan: LanguageFlow.Plan) {
@@ -342,7 +307,6 @@ final class FlowModel: ObservableObject {
     private func showMessage(_ message: String) {
         selectedText = ""
         languagePlan = nil
-        pendingLanguagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
         dismissAfterDelay()

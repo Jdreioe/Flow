@@ -33,60 +33,76 @@ final class PlaybackPopupController {
 
 struct PlaybackPopupView: View {
     @ObservedObject var model: FlowModel
+    @State private var showsLanguages = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if model.state == .languageCheck {
-                LanguageCheckView(model: model)
-            } else {
-                HStack {
-                    Text(title)
-                        .font(.headline)
-                    Spacer()
-                    if showsLanguageOverride {
-                        Picker("Read in", selection: Binding(
-                            get: { model.textLanguageOverride ?? "" },
-                            set: { model.setTextLanguageOverride($0.isEmpty ? nil : $0) },
-                        )) {
-                            Text("Auto").tag("")
-                            ForEach(FlowLanguageOption.allCases) { option in
-                                Text(option.title).tag(option.tag)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 150)
-                        .accessibilityLabel("Language override")
-                    }
-                    Button("Stop", action: model.stop)
-                        .keyboardShortcut(.escape, modifiers: [])
-                        .accessibilityLabel("Stop reading")
-                }
-                if model.textLanguageOverride != nil, model.overrideNeedsRoute,
-                   let firstRouteID = currentPlan?.sentences.first?.route.id {
-                    Picker("Read as", selection: Binding(
-                        get: { firstRouteID },
-                        set: { model.applyOverrideRoute($0) },
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                if showsLanguageOverride {
+                    Picker("Read in", selection: Binding(
+                        get: { model.textLanguageOverride ?? "" },
+                        set: { model.setTextLanguageOverride($0.isEmpty ? nil : $0) },
                     )) {
-                        ForEach(model.settings.allLanguageRoutes) { route in
-                            Text(route.displayName).tag(route.id)
+                        Text("Auto").tag("")
+                        ForEach(SupportedLanguage.all) { language in
+                            Text(language.title).tag(language.tag)
                         }
                     }
-                    .accessibilityLabel("Read the overridden language as")
+                    .labelsHidden()
+                    .frame(maxWidth: 150)
+                    .accessibilityLabel("Language override")
                 }
-                if case let .message(message) = model.state {
-                    Text(message)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(model.selectedText)
-                        .lineLimit(4)
-                        .textSelection(.enabled)
-                        .accessibilityLabel("Selected text being read")
+                if showsLanguageButton {
+                    Button(showsLanguages ? "Hide languages" : "Language…") {
+                        showsLanguages.toggle()
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.detectedLanguages.isEmpty)
                 }
-                if model.state == .playing || model.state == .paused {
-                    Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityLabel(model.state == .paused ? "Resume reading" : "Pause reading")
+                Button("Stop", action: model.stop)
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .accessibilityLabel("Stop reading")
+            }
+            if model.textLanguageOverride != nil, model.overrideNeedsRoute,
+               let firstRouteID = model.languagePlan?.sentences.first?.route.id {
+                Picker("Read as", selection: Binding(
+                    get: { firstRouteID },
+                    set: { model.applyOverrideRoute($0) },
+                )) {
+                    ForEach(model.settings.allLanguageRoutes) { route in
+                        Text(route.displayName).tag(route.id)
+                    }
                 }
+                .accessibilityLabel("Read the overridden language as")
+            }
+            if case let .message(message) = model.state {
+                Text(message)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(model.selectedText)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Selected text being read")
+            }
+            if showsLanguages, !model.detectedLanguages.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.detectedLanguages, id: \.self) { tag in
+                        LanguageRouteRow(model: model, languageTag: tag)
+                    }
+                }
+            }
+            if showsAwaitingRouteNotice {
+                Text("Pick a voice for \(languageName(model.textLanguageOverride ?? "")) to start reading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if model.state == .playing || model.state == .paused {
+                Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel(model.state == .paused ? "Resume reading" : "Pause reading")
             }
         }
         .padding(20)
@@ -94,13 +110,24 @@ struct PlaybackPopupView: View {
 
     private var showsLanguageOverride: Bool {
         switch model.state {
-        case .preparing, .playing, .paused, .languageCheck: true
+        case .preparing, .playing, .paused, .awaitingRoute: true
         default: false
         }
     }
 
-    private var currentPlan: LanguageFlow.Plan? {
-        model.state == .languageCheck ? model.pendingLanguagePlan : model.languagePlan
+    private var showsLanguageButton: Bool {
+        switch model.state {
+        case .playing, .paused: true
+        default: false
+        }
+    }
+
+    private var showsAwaitingRouteNotice: Bool {
+        model.state == .awaitingRoute && model.overrideNeedsRoute
+    }
+
+    private func languageName(_ tag: String) -> String {
+        Locale.current.localizedString(forIdentifier: tag) ?? tag
     }
 
     private var title: String {
@@ -108,7 +135,7 @@ struct PlaybackPopupView: View {
         case .preparing: "Preparing playback"
         case .playing: "Reading"
         case .paused: "Paused"
-        case .languageCheck: "Language check"
+        case .awaitingRoute: "Choose a voice"
         case .finished: "Finished"
         case .message: "Flow"
         case .hidden: "Flow"
@@ -116,50 +143,30 @@ struct PlaybackPopupView: View {
     }
 }
 
-private struct LanguageCheckView: View {
+private struct LanguageRouteRow: View {
     @ObservedObject var model: FlowModel
+    let languageTag: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Language check")
-                .font(.headline)
-            Text("Choose how Flow should read these sentences before playback starts.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            ForEach(model.pendingLanguagePlan?.sentences.filter(\.needsReview) ?? []) { sentence in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(sentence.text)
-                        .lineLimit(2)
-                    if sentence.detectedButUnconfigured, let tag = sentence.detectedLanguageTag {
-                        Text("Flow detected \(Locale.current.localizedString(forIdentifier: tag) ?? tag), but it is not enabled.")
-                            .font(.caption)
-                        Button("Enable \(Locale.current.localizedString(forIdentifier: tag) ?? tag) in Settings") {
-                            model.enableDetectedLanguage(for: sentence.id)
-                        }
-                    }
-                    Picker("Read as", selection: Binding(
-                        get: { sentence.route.id },
-                        set: { model.chooseLanguageRoute($0, for: sentence.id) },
-                    )) {
-                        ForEach(model.settings.allLanguageRoutes) { route in
-                            Text(route.displayName).tag(route.id)
-                        }
-                    }
-                    if let tag = sentence.detectedLanguageTag {
-                        Button("Use this choice for all \(Locale.current.localizedString(forIdentifier: tag) ?? tag) sentences") {
-                            model.chooseLanguageRoute(sentence.route.id, forAllDetectedLanguage: tag)
-                        }
-                        .font(.caption)
-                    }
+        HStack {
+            Text(Locale.current.localizedString(forIdentifier: languageTag) ?? languageTag)
+                .font(.caption.bold())
+            Spacer()
+            Picker("Read as", selection: Binding<UUID?>(
+                get: { currentRouteID },
+                set: { if let routeID = $0 { model.setRoute(routeID, forAllDetectedLanguage: languageTag) } },
+            )) {
+                ForEach(model.settings.allLanguageRoutes) { route in
+                    Text(route.displayName).tag(route.id as UUID?)
                 }
-                .padding(.vertical, 4)
             }
-            HStack {
-                Button("Cancel", action: model.stop)
-                Spacer()
-                Button("Start reading", action: model.confirmLanguageCheck)
-                    .buttonStyle(.borderedProminent)
-            }
+            .labelsHidden()
+            .frame(maxWidth: 220)
+            .accessibilityLabel("Read all \(languageTag) sentences as")
         }
+    }
+
+    private var currentRouteID: UUID? {
+        model.languagePlan?.sentences.first { $0.detectedLanguageTag == languageTag }?.route.id
     }
 }

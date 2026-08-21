@@ -28,9 +28,12 @@ full. Playback starts immediately using best-guess routing.
 Correction is post-hoc and **silent until wrong**:
 
 - No detection UI appears while detection matches configured routing.
-- A persistent **Language…** button sits next to Stop/Pause. It opens a
-  compact re-route sheet listing languages detected so far; picking a route
-  applies from the current sentence onward.
+- A persistent **Language…** button sits next to Stop/Pause. It expands a
+  compact section in the popup listing languages detected so far; picking a
+  route for a language applies to every remaining sentence of that language.
+  Because cloud speech sources synthesize the whole selection into one
+  stream, applying a route replays the selection from its start with the
+  new routing.
 - When the current sentence's detected language has no route, an inline chip
   appears: "Reading French with English voice — tap to fix". Tapping creates
   the route with a suggested voice (see below) in one action and playback
@@ -57,20 +60,17 @@ screen-center.
 ### Language override
 
 - A language picker lives in the playback popup next to the **Language…**
-  button (until issue #4 adds that button, the picker stands alone),
-  defaulting to **Auto**. It is available during Language check too, so a
-  flagged selection can be overridden before playback starts.
+  button, defaulting to **Auto**.
 - When a specific language is picked, sentence detection is suspended for
   the current selection: every sentence is read with that language's route.
-- If the overridden language has no configured route, an inline "Read as"
-  route picker appears in the popup; the chosen route applies immediately
-  and lasts as long as the override. It never silently falls back to the
-  default voice.
+- If the overridden language has no configured route, playback holds in an
+  "awaiting route" state and an inline "Read as" route picker appears in the
+  popup; reading starts only once a route is chosen. It never silently falls
+  back to the default voice. The chosen route lasts as long as the override.
 - Restoring Auto re-runs detection but never blocks: review flags are
   cleared and reading continues immediately (ADR 0003).
-- The override lasts until the next capture of *different* text — a
-  same-selection capture used for pause/resume preserves it. There is no
-  override UI in settings.
+- The override lasts until the next capture — nothing sticky survives into
+  the following playback. There is no override UI in settings.
 
 ## Settings
 

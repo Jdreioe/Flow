@@ -194,28 +194,36 @@ enum LanguageFlow {
             .sorted { $0.value > $1.value }
         guard let first = hypotheses.first else { return (nil, 0, 0) }
         let second = hypotheses.dropFirst().first?.value ?? 0
-        return (FlowLanguageOption.defaultTag(for: first.key.rawValue), first.value, first.value - second)
+        return (SupportedLanguage.canonicalTag(for: first.key.rawValue), first.value, first.value - second)
     }
 }
 
-enum FlowLanguageOption: String, CaseIterable, Identifiable {
-    case english = "en-US"
-    case danish = "da-DK"
-    case swedish = "sv-SE"
-    case norwegian = "nb-NO"
-    case german = "de-DE"
-    case french = "fr-FR"
-    case spanish = "es-ES"
-    case italian = "it-IT"
-    case dutch = "nl-NL"
-    case portuguese = "pt-PT"
+struct SupportedLanguage: Identifiable, Hashable {
+    let tag: String
+    let name: String
 
-    var id: String { rawValue }
-    var tag: String { rawValue }
-    var title: String { Locale.current.localizedString(forIdentifier: rawValue) ?? rawValue }
+    var id: String { tag }
+    var title: String { Locale.current.localizedString(forIdentifier: tag) ?? name }
 
-    static func defaultTag(for detectedTag: String) -> String {
+    // Mirrors the shared core's supported language list
+    // (core/src/language.rs). The Swift/Rust bridge that would drive this
+    // from the core directly is deferred (ADR 0001); keep both lists in
+    // sync until it lands.
+    static let all: [SupportedLanguage] = [
+        .init(tag: "en-US", name: "English"),
+        .init(tag: "da-DK", name: "Danish"),
+        .init(tag: "sv-SE", name: "Swedish"),
+        .init(tag: "nb-NO", name: "Norwegian Bokmål"),
+        .init(tag: "de-DE", name: "German"),
+        .init(tag: "fr-FR", name: "French"),
+        .init(tag: "es-ES", name: "Spanish"),
+        .init(tag: "it-IT", name: "Italian"),
+        .init(tag: "nl-NL", name: "Dutch"),
+        .init(tag: "pt-PT", name: "Portuguese"),
+    ]
+
+    static func canonicalTag(for detectedTag: String) -> String {
         let base = detectedTag.split(separator: "-").first?.lowercased()
-        return allCases.first { $0.tag.split(separator: "-").first?.lowercased() == base }?.tag ?? detectedTag
+        return all.first { $0.tag.split(separator: "-").first?.lowercased() == base }?.tag ?? detectedTag
     }
 }

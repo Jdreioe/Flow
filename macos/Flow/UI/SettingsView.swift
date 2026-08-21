@@ -44,7 +44,7 @@ struct FlowSettingsView: View {
                             model.settings.googleVoiceName = nil
                         },
                 )) {
-                    ForEach(FlowLanguageOption.allCases) { language in
+                    ForEach(SupportedLanguage.all) { language in
                         Text(language.title).tag(language.tag)
                     }
                 }
@@ -85,7 +85,7 @@ struct FlowSettingsView: View {
                 }
                 HStack {
                     Picker("Language", selection: $languageToAdd) {
-                        ForEach(FlowLanguageOption.allCases.filter { option in
+                        ForEach(SupportedLanguage.all.filter { option in
                             option.tag != model.settings.defaultLanguageTag &&
                                 !model.settings.languageRoutes.contains(where: { $0.languageTag == option.tag })
                         }) { language in
