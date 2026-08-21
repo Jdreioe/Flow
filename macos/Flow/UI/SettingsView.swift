@@ -32,6 +32,25 @@ struct FlowSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Language Flow") {
+                HStack {
+                    Slider(
+                        value: Binding(
+                            get: { Double(model.settings.playbackSpeed) },
+                            set: { model.setPlaybackSpeed(Float($0)) },
+                        ),
+                        in: 0.5...4,
+                        step: 0.25,
+                    ) {
+                        Text("Playback speed")
+                    } minimumValueLabel: {
+                        Text("0.5×")
+                    } maximumValueLabel: {
+                        Text("4×")
+                    }
+                    Text("\(String(format: "%g×", model.settings.playbackSpeed))")
+                        .monospacedDigit()
+                        .frame(minWidth: 44, alignment: .trailing)
+                }
                 LanguageRouteEditor(
                     route: Binding(
                         get: { model.settings.defaultLanguageRoute },
@@ -168,9 +187,6 @@ private struct LanguageRouteEditor: View {
                         Text(voice.name).tag(String?.some(voice.id))
                     }
                 }
-                Slider(value: $route.systemSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                    Text("Speech rate")
-                }
             }
             if showAzureRoute {
                 Picker("Azure voice", selection: Binding(
@@ -180,9 +196,6 @@ private struct LanguageRouteEditor: View {
                     ForEach(matchingAzureVoices) { voice in
                         Text(voice.shortName).tag(voice.shortName)
                     }
-                }
-                Slider(value: $route.azureSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                    Text("Azure speech rate")
                 }
                 if matchingAzureVoices.isEmpty {
                     Text("No Azure voices support \(route.displayName) in this resource's region.")
@@ -196,9 +209,6 @@ private struct LanguageRouteEditor: View {
                     ForEach(matchingGoogleVoices) { voice in
                         Text(voice.displayName).tag(String?.some(voice.name))
                     }
-                }
-                Slider(value: $route.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                    Text("Google speech rate")
                 }
                 if matchingGoogleVoices.isEmpty {
                     Text("No Google voices were loaded for \(route.displayName). The default voice may still be available.")
@@ -311,9 +321,6 @@ private struct SpeechConfigurationView: View {
                             Text(voice.shortName).tag(voice.shortName)
                         }
                     }
-                    Slider(value: $model.settings.azureSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                        Text("Fallback speech rate")
-                    }
                 }
                 Button("Refresh Azure voices") { model.refreshAzureVoices() }
                 Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)
@@ -365,9 +372,6 @@ private struct SpeechConfigurationView: View {
                         Text(voice.displayName).tag(String?.some(voice.name))
                     }
                 }
-            }
-            Slider(value: $model.settings.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                Text("Google speech rate")
             }
             Button("Refresh Google voices") { model.refreshGoogleVoices() }
             Button("Remove Google configuration", role: .destructive) {

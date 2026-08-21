@@ -1,11 +1,17 @@
 import AppKit
 import SwiftUI
 
+final class PlaybackPopupPanel: NSPanel {
+    // SwiftUI's Slider only tracks inside a key window; becoming key does not
+    // activate the app because of the nonactivating panel style mask.
+    override var canBecomeKey: Bool { true }
+}
+
 final class PlaybackPopupController {
     private let panel: NSPanel
 
     init(model: FlowModel) {
-        panel = NSPanel(
+        panel = PlaybackPopupPanel(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 250),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
@@ -16,7 +22,6 @@ final class PlaybackPopupController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
         panel.contentView = NSHostingView(rootView: PlaybackPopupView(model: model))
     }
 
@@ -38,7 +43,7 @@ final class PlaybackPopupController {
 struct PlaybackPopupView: View {
     @ObservedObject var model: FlowModel
     @State private var showsLanguages = false
-    @State private var scrubPosition: Double?
+    @State private var pendingSpeed: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -114,22 +119,40 @@ struct PlaybackPopupView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if showsSlider, let progress = model.playbackProgress {
-                Slider(
-                    value: Binding(
-                        get: { scrubPosition ?? progress },
-                        set: { scrubPosition = $0 },
-                    ),
-                    onEditingChanged: { editing in
+            if showsSpeedControl {
+                HStack(spacing: 10) {
+                    Image(systemName: "gauge.with.needle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Slider(
+                        value: Binding(
+                            get: { pendingSpeed ?? Double(model.playbackSpeed) },
+                            set: { pendingSpeed = $0 },
+                        ),
+                        in: 0.5...4,
+                        step: 0.25,
+                    ) {
+                        EmptyView()
+                    } minimumValueLabel: {
+                        Text("0.5×")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } maximumValueLabel: {
+                        Text("4×")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } onEditingChanged: { editing in
                         guard !editing else { return }
-                        defer { scrubPosition = nil }
-                        guard let scrubPosition else { return }
-                        model.seek(to: scrubPosition)
-                    },
-                )
-                .disabled(!model.playbackSeekSupported)
-                .accessibilityLabel("Playback position")
-                .accessibilityValue("\(Int(((scrubPosition ?? progress) * 100).rounded())) percent")
+                        defer { pendingSpeed = nil }
+                        guard let pendingSpeed else { return }
+                        model.setPlaybackSpeed(Float(pendingSpeed))
+                    }
+                    .accessibilityLabel("Playback speed")
+                    .accessibilityValue("\(speedLabel) times normal speed")
+                    Text(speedLabel)
+                        .font(.callout.monospacedDigit())
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
             }
             if model.state == .playing || model.state == .paused {
                 Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
@@ -158,11 +181,15 @@ struct PlaybackPopupView: View {
         model.state == .awaitingRoute && (model.overrideNeedsRoute || model.manualRouteNeeded)
     }
 
-    private var showsSlider: Bool {
+    private var showsSpeedControl: Bool {
         switch model.state {
-        case .playing, .paused: model.playbackProgress != nil
+        case .preparing, .playing, .paused, .awaitingRoute: true
         default: false
         }
+    }
+
+    private var speedLabel: String {
+        String(format: "%g×", pendingSpeed ?? Double(model.playbackSpeed))
     }
 
     private func languageName(_ tag: String) -> String {
@@ -187,7 +214,9 @@ struct PlaybackPopupView: View {
               range.upperBound <= model.selectedText.utf16.count else {
             return Text(model.selectedText)
         }
-        let readingOffset = Int(model.currentReadingOffset ?? Double(range.lowerBound))
+        let readingOffset = min(
+            max(0, Int(model.currentReadingOffset ?? Double(range.lowerBound))),
+            model.selectedText.utf16.count)
         // Keep the spoken word just before the visual midpoint so the preview
         // advances early enough to show the words that are about to be read.
         let nominalWindowStart = max(0, readingOffset - 24)
@@ -202,7 +231,7 @@ struct PlaybackPopupView: View {
             .lastIndex(of: "\n")
             .map { model.selectedText.index(after: $0).utf16Offset(in: model.selectedText) }
             ?? 0
-        let windowStart = max(nominalWindowStart, paragraphStart)
+        let windowStart = min(max(nominalWindowStart, paragraphStart), range.lowerBound)
         let visibleStart = String.Index(utf16Offset: windowStart, in: model.selectedText)
         let visibleEnd = String.Index(utf16Offset: windowEnd, in: model.selectedText)
         let prefix = String(model.selectedText[visibleStart..<start])

@@ -20,7 +20,6 @@ ApplicationWindow {
     property var wordTimings: []
     property int currentWordStart: -1
     property int currentWordEnd: -1
-    property int pendingSeekMs: -1
 
     function escapedHtml(value) {
         return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -52,7 +51,6 @@ ApplicationWindow {
             player.source = ""
         }
         cloudActive = false
-        root.pendingSeekMs = -1
         cloudPlayerLoader.active = false
     }
 
@@ -143,7 +141,7 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onPlay_cloud(fileUrl, wordTimingsJson, offsetMs) {
+        function onPlay_cloud(fileUrl, wordTimingsJson) {
             cloudPlayerLoader.active = true
             let player = cloudPlayer()
             if (!player) {
@@ -151,25 +149,24 @@ ApplicationWindow {
                 return
             }
             player.source = fileUrl
+            player.playbackRate = backend.playback_speed
             root.wordTimings = JSON.parse(wordTimingsJson)
             root.currentWordStart = -1
             root.currentWordEnd = -1
-            root.pendingSeekMs = offsetMs > 0 ? offsetMs : -1
             cloudActive = true
-            if (backend.state !== "paused")
-                player.play()
-        }
-
-        function onSeek_audio(offsetMs) {
-            let player = cloudPlayer()
-            if (cloudActive && player)
-                player.seek(offsetMs)
+            player.play()
         }
 
         function onPause_playback() {
             let player = cloudPlayer()
             if (cloudActive && player)
                 player.pause()
+        }
+
+        function onPlayback_speed_changed() {
+            let player = cloudPlayer()
+            if (cloudActive && player)
+                player.playbackRate = backend.playback_speed
         }
 
         function onResume_playback() {
@@ -204,13 +201,7 @@ ApplicationWindow {
                 audioOutput: cloudOutput
 
                 onMediaStatusChanged: {
-                    if (root.cloudActive && mediaStatus === MediaPlayer.LoadedMedia) {
-                        backend.report_duration(duration)
-                        if (root.pendingSeekMs >= 0) {
-                            player.seek(root.pendingSeekMs)
-                            root.pendingSeekMs = -1
-                        }
-                    } else if (root.cloudActive && mediaStatus === MediaPlayer.EndOfMedia) {
+                    if (root.cloudActive && mediaStatus === MediaPlayer.EndOfMedia) {
                         root.stopCloudPlayback()
                         backend.playback_finished()
                     } else if (root.cloudActive && mediaStatus === MediaPlayer.InvalidMedia) {
@@ -236,7 +227,6 @@ ApplicationWindow {
             const player = root.cloudPlayer()
             if (!player) return
             const seconds = player.position / 1000
-            backend.report_position(player.position)
             let active = null
             for (let index = 0; index < root.wordTimings.length; ++index) {
                 if (root.wordTimings[index].timeSeconds <= seconds) active = root.wordTimings[index]
@@ -394,25 +384,40 @@ ApplicationWindow {
                     Accessible.name: "Selected text being read"
                 }
 
-                Slider {
-                    id: playbackSlider
+                RowLayout {
                     visible: (backend.state === "playing" || backend.state === "paused")
-                        && backend.playback_seek_supported
+                        && root.cloudActive
                     Layout.fillWidth: true
-                    from: 0
-                    to: 1
-                    value: 0
-                    Binding on value {
-                        when: !playbackSlider.pressed
-                        value: backend.playback_progress
-                        restoreMode: Binding.RestoreBindingOrValue
+                    spacing: 10
+
+                    Label {
+                        text: qsTr("Speed")
+                        color: palette.mid
                     }
-                    onPressedChanged: {
-                        if (!pressed)
-                            backend.seek_to_fraction(playbackSlider.value)
+                    Slider {
+                        id: speedSlider
+                        Layout.fillWidth: true
+                        from: 0.5
+                        to: 4.0
+                        stepSize: 0.25
+                        value: backend.playback_speed
+                        Binding on value {
+                            when: !speedSlider.pressed
+                            value: backend.playback_speed
+                            restoreMode: Binding.RestoreBindingOrValue
+                        }
+                        onPressedChanged: {
+                            if (!pressed)
+                                backend.set_playback_speed(speedSlider.value)
+                        }
+                        Accessible.name: qsTr("Playback speed")
+                        Accessible.value: Math.round(speedSlider.value * 100) + "%"
                     }
-                    Accessible.name: qsTr("Playback position")
-                    Accessible.value: Math.round(playbackSlider.value * 100) + "%"
+                    Label {
+                        text: Number(backend.playback_speed.toFixed(2)).toString() + "×"
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: 48
+                    }
                 }
 
                 ComboBox {
@@ -640,6 +645,24 @@ ApplicationWindow {
                             opacity: 0.75
                             text: "Choose a fallback voice, then add languages that need their own voice. Detection stays on this device."
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: qsTr("Playback speed") }
+                            Slider {
+                                id: flowSpeedSlider
+                                Layout.fillWidth: true
+                                from: 0.5
+                                to: 4.0
+                                stepSize: 0.25
+                                value: settings.playbackSpeed
+                                onMoved: backend.update_setting("playbackSpeed", value.toString())
+                            }
+                            Label {
+                                text: Number(flowSpeedSlider.value.toFixed(2)).toString() + "×"
+                                horizontalAlignment: Text.AlignRight
+                                Layout.preferredWidth: 48
+                            }
+                        }
                         ComboBox {
                             visible: settings.speechSource === "system"
                             Layout.fillWidth: true
@@ -652,17 +675,6 @@ ApplicationWindow {
                             onActivated: backend.update_setting("systemVoiceName",
                                 currentIndex === 0 ? "" : currentText)
                         }
-                        RowLayout {
-                            visible: settings.speechSource === "system"
-                            Label { text: "Fallback speech rate" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: -1
-                                to: 1
-                                value: settings.systemSpeechRate
-                                onMoved: backend.update_setting("systemSpeechRate", value.toString())
-                            }
-                        }
                         ComboBox {
                             visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             Layout.fillWidth: true
@@ -670,17 +682,6 @@ ApplicationWindow {
                             currentIndex: Math.max(0, model.indexOf(settings.azureVoiceName))
                             displayText: currentText || "Choose a fallback Azure voice"
                             onActivated: backend.update_setting("azureVoiceName", currentText)
-                        }
-                        RowLayout {
-                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
-                            Label { text: "Fallback speech rate" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: -1
-                                to: 1
-                                value: settings.azureSpeechRate
-                                onMoved: backend.update_setting("azureSpeechRate", value.toString())
-                            }
                         }
                         ComboBox {
                             visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
@@ -691,17 +692,6 @@ ApplicationWindow {
                                 : 0
                             onActivated: backend.update_setting("googleVoiceName",
                                 currentIndex === 0 ? "" : currentText)
-                        }
-                        RowLayout {
-                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
-                            Label { text: "Fallback speech rate" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: -1
-                                to: 1
-                                value: settings.googleSpeechRate
-                                onMoved: backend.update_setting("googleSpeechRate", value.toString())
-                            }
                         }
 
                         Repeater {
@@ -736,17 +726,6 @@ ApplicationWindow {
                                         onActivated: backend.update_route(modelData.id, "systemVoiceName",
                                             currentIndex === 0 ? "" : currentText)
                                     }
-                                    RowLayout {
-                                        visible: parent.parent.expanded && settings.speechSource === "system"
-                                        Label { text: "Speech rate" }
-                                        Slider {
-                                            Layout.fillWidth: true
-                                            from: -1
-                                            to: 1
-                                            value: modelData.systemSpeechRate
-                                            onMoved: backend.update_route(modelData.id, "systemSpeechRate", value.toString())
-                                        }
-                                    }
                                     ComboBox {
                                         id: routeAzureVoicePicker
                                         visible: parent.parent.expanded && settings.speechSource === "azure"
@@ -755,17 +734,6 @@ ApplicationWindow {
                                         currentIndex: Math.max(0, model.indexOf(modelData.azureVoiceName || ""))
                                         displayText: currentText || "Choose an Azure voice"
                                         onActivated: backend.update_route(modelData.id, "azureVoiceName", currentText)
-                                    }
-                                    RowLayout {
-                                        visible: parent.parent.expanded && settings.speechSource === "azure"
-                                        Label { text: "Azure speech rate" }
-                                        Slider {
-                                            Layout.fillWidth: true
-                                            from: -1
-                                            to: 1
-                                            value: modelData.azureSpeechRate
-                                            onMoved: backend.update_route(modelData.id, "azureSpeechRate", value.toString())
-                                        }
                                     }
                                     ComboBox {
                                         id: routeGoogleVoicePicker
@@ -777,17 +745,6 @@ ApplicationWindow {
                                             : 0
                                         onActivated: backend.update_route(modelData.id, "googleVoiceName",
                                             currentIndex === 0 ? "" : currentText)
-                                    }
-                                    RowLayout {
-                                        visible: parent.parent.expanded && settings.speechSource === "google"
-                                        Label { text: "Google speech rate" }
-                                        Slider {
-                                            Layout.fillWidth: true
-                                            from: -1
-                                            to: 1
-                                            value: modelData.googleSpeechRate
-                                            onMoved: backend.update_route(modelData.id, "googleSpeechRate", value.toString())
-                                        }
                                     }
                                     Button {
                                         visible: parent.parent.expanded

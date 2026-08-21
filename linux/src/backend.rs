@@ -56,12 +56,6 @@ impl PlaybackState {
     }
 }
 
-struct CloudSegment {
-    audio: TempPath,
-    duration_ms: u64,
-    word_timings: Vec<google::WordTiming>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot<'a> {
@@ -101,17 +95,14 @@ pub struct FlowBackend {
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
 
-    play_cloud: qt_signal!(file_url: QString, word_timings_json: QString, offset_ms: i64),
-    seek_audio: qt_signal!(offset_ms: i64),
+    play_cloud: qt_signal!(file_url: QString, word_timings_json: QString),
     pause_playback: qt_signal!(),
     resume_playback: qt_signal!(),
     stop_audio: qt_signal!(),
     show_settings: qt_signal!(),
 
-    playback_progress: qt_property!(f64; NOTIFY playback_progress_changed),
-    playback_progress_changed: qt_signal!(),
-    playback_seek_supported: qt_property!(bool; NOTIFY playback_seek_supported_changed),
-    playback_seek_supported_changed: qt_signal!(),
+    playback_speed: qt_property!(f64; NOTIFY playback_speed_changed),
+    playback_speed_changed: qt_signal!(),
 
     start: qt_method!(
         fn start(&mut self) {
@@ -351,24 +342,16 @@ pub struct FlowBackend {
             self.start_plan(text, plan);
         }
     ),
-    seek_to_fraction: qt_method!(
-        fn seek_to_fraction(&mut self, fraction: f64) {
-            self.seek_cloud(fraction);
-        }
-    ),
-    report_position: qt_method!(
-        fn report_position(&mut self, position_ms: i64) {
-            self.update_cloud_progress(position_ms.max(0) as u64);
-        }
-    ),
-    report_duration: qt_method!(
-        fn report_duration(&mut self, duration_ms: i64) {
-            if duration_ms <= 0 {
+    set_playback_speed: qt_method!(
+        fn set_playback_speed(&mut self, speed: f64) {
+            let clamped = speed.clamp(0.5, 4.0);
+            if (self.settings.playback_speed - clamped).abs() < f64::EPSILON {
                 return;
             }
-            if let Some(segment) = self.cloud_segments.get_mut(self.cloud_current_segment) {
-                segment.duration_ms = duration_ms as u64;
-            }
+            self.settings.playback_speed = clamped;
+            self.playback_speed = clamped;
+            self.playback_speed_changed();
+            self.persist_settings();
         }
     ),
 
@@ -383,8 +366,9 @@ pub struct FlowBackend {
     system_voices: Vec<SystemVoice>,
     azure_voices: Vec<AzureVoice>,
     google_voices: Vec<GoogleVoice>,
-    cloud_segments: Vec<CloudSegment>,
-    cloud_current_segment: usize,
+    audio_path: Option<TempPath>,
+    queued_audio_paths: VecDeque<TempPath>,
+    queued_word_timings: VecDeque<Vec<google::WordTiming>>,
     shortcut_commands: Option<mpsc::UnboundedSender<shortcuts::Command>>,
     system_speech_commands: Option<std::sync::mpsc::Sender<system_speech::Command>>,
     services_started: bool,
@@ -429,12 +413,7 @@ impl Default for FlowBackend {
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
             configuration_error_changed: Default::default(),
-            playback_progress: 0.0,
-            playback_progress_changed: Default::default(),
-            playback_seek_supported: false,
-            playback_seek_supported_changed: Default::default(),
             play_cloud: Default::default(),
-            seek_audio: Default::default(),
             pause_playback: Default::default(),
             resume_playback: Default::default(),
             stop_audio: Default::default(),
@@ -460,9 +439,7 @@ impl Default for FlowBackend {
             clear_google_configuration: Default::default(),
             refresh_google_voices: Default::default(),
             play_test_voice: Default::default(),
-            seek_to_fraction: Default::default(),
-            report_position: Default::default(),
-            report_duration: Default::default(),
+            set_playback_speed: Default::default(),
             settings,
             playback_state: PlaybackState::Hidden,
             selected_text: String::new(),
@@ -475,10 +452,10 @@ impl Default for FlowBackend {
             system_voices: Vec::new(),
             azure_voices: Vec::new(),
             google_voices: Vec::new(),
-            cloud_segments: Vec::new(),
-            cloud_current_segment: 0,
-            playback_progress: 0.0,
-            playback_seek_supported: false,
+            audio_path: None,
+            queued_audio_paths: VecDeque::new(),
+            queued_word_timings: VecDeque::new(),
+            playback_speed: settings.playback_speed,
             shortcut_commands: None,
             shortcut_commands: None,
             system_speech_commands: None,
@@ -703,6 +680,10 @@ impl FlowBackend {
             self.manual_route_needed = false;
             self.manual_route_needed_changed();
         }
+        if (self.playback_speed - self.settings.playback_speed).abs() > f64::EPSILON {
+            self.playback_speed = self.settings.playback_speed;
+            self.playback_speed_changed();
+        }
         self.selected_text = text;
         self.playback_text = playback_text(&plan, &text).into();
         self.playback_text_changed();
@@ -744,7 +725,7 @@ impl FlowBackend {
             if let Some(backend) = pointer.as_pinned() {
                 let mut backend = backend.borrow_mut();
                 match result {
-                    Ok(audio) => backend.play_cloud_audio(audio, 160_000),
+                    Ok(audio) => backend.play_cloud_audio(audio),
                     Err(message) => backend.show_message(message),
                 }
             }
@@ -776,7 +757,7 @@ impl FlowBackend {
             if let Some(backend) = pointer.as_pinned() {
                 let mut backend = backend.borrow_mut();
                 match result {
-                    Ok(audio) => backend.play_cloud_audio(audio, 32_000),
+                    Ok(audio) => backend.play_cloud_audio(audio),
                     Err(message) => backend.show_message(message),
                 }
             }
@@ -793,53 +774,43 @@ impl FlowBackend {
         });
     }
 
-    fn play_cloud_audio(&mut self, audio_segments: Vec<(Vec<u8>, Vec<google::WordTiming>)>, bits_per_second: u64) {
-        let segments = audio_segments
+    fn play_cloud_audio(&mut self, audio_segments: Vec<(Vec<u8>, Vec<google::WordTiming>)>) {
+        let result = audio_segments
             .into_iter()
-            .map(|(audio, word_timings)| {
+            .map(|(audio, timings)| {
                 tempfile::Builder::new()
                     .prefix("flow-")
                     .suffix(".mp3")
                     .tempfile()
                     .and_then(|mut file| {
                         file.write_all(&audio)?;
-                        let duration_ms = (audio.len() as u64)
-                            .saturating_mul(8_000)
-                            .checked_div(bits_per_second.max(1))
-                            .unwrap_or(0);
-                        Ok(CloudSegment {
-                            audio: file.into_temp_path(),
-                            duration_ms,
-                            word_timings,
-                        })
+                        Ok((file.into_temp_path(), timings))
                     })
             })
             .collect::<Result<Vec<_>, _>>();
-        match segments {
-            Ok(segments) if !segments.is_empty() => {
-                self.cloud_segments = segments;
-                self.cloud_current_segment = 0;
-                if !self.playback_seek_supported {
-                    self.playback_seek_supported = true;
-                    self.playback_seek_supported_changed();
-                }
-                self.start_cloud_segment(0, 0);
+        match result {
+            Ok(paths) if !paths.is_empty() => {
+                let (audio_paths, word_timings): (VecDeque<_>, VecDeque<_>) = paths.into_iter().unzip();
+                self.queued_audio_paths = audio_paths;
+                self.queued_word_timings = word_timings;
+                self.play_next_cloud_segment();
             }
             _ => self
                 .show_message("The cloud speech service returned audio that Flow could not play."),
         }
     }
 
-    fn start_cloud_segment(&mut self, index: usize, offset_ms: i64) {
-        let Some(segment) = self.cloud_segments.get(index) else {
+    fn play_next_cloud_segment(&mut self) {
+        self.audio_path = self.queued_audio_paths.pop_front();
+        if let Some(path) = &self.audio_path {
+            let url = format!("file://{}", path.display());
+            let timings = self.queued_word_timings.pop_front().unwrap_or_default();
+            let timings_json = serde_json::to_string(&timings).unwrap_or_else(|_| "[]".into());
+            self.set_state(PlaybackState::Playing);
+            self.play_cloud(url.into(), timings_json.into());
+        } else {
             self.finish_reading();
-            return;
-        };
-        self.cloud_current_segment = index;
-        let url = format!("file://{}", segment.audio.display());
-        let timings_json = serde_json::to_string(&segment.word_timings).unwrap_or_else(|_| "[]".into());
-        self.set_state(PlaybackState::Playing);
-        self.play_cloud(url.into(), timings_json.into(), offset_ms);
+        }
     }
 
     fn cloud_segment_finished(&mut self) {
@@ -849,78 +820,8 @@ impl FlowBackend {
         ) {
             return;
         }
-        self.start_cloud_segment(self.cloud_current_segment + 1, 0);
-    }
-
-    fn seek_cloud(&mut self, fraction: f64) {
-        if !self.playback_seek_supported || self.cloud_segments.is_empty() {
-            return;
-        }
-        let total_ms: u64 = self.cloud_segments.iter().map(|s| s.duration_ms).sum();
-        if total_ms == 0 {
-            return;
-        }
-        let clamped = fraction.clamp(0.0, 1.0);
-        let mut remaining = (clamped * total_ms as f64).round() as i64;
-        for (index, segment) in self.cloud_segments.iter().enumerate() {
-            let duration = segment.duration_ms as i64;
-            if remaining > duration && index < self.cloud_segments.len() - 1 {
-                remaining -= duration;
-                continue;
-            }
-            let within = remaining.clamp(0, duration);
-            if index == self.cloud_current_segment {
-                self.seek_audio(within);
-                self.update_cloud_progress(within.max(0) as u64);
-            } else {
-                let was_paused = self.playback_state == PlaybackState::Paused;
-                self.start_cloud_segment(index, within);
-                if was_paused {
-                    self.pause_playback();
-                }
-            }
-            return;
-        }
-    }
-
-    fn update_cloud_progress(&mut self, position_in_current_ms: u64) {
-        let Some(current_duration) = self
-            .cloud_segments
-            .get(self.cloud_current_segment)
-            .map(|segment| segment.duration_ms)
-        else {
-            return;
-        };
-        let total_ms: u64 = self.cloud_segments.iter().map(|s| s.duration_ms).sum();
-        if total_ms == 0 {
-            return;
-        }
-        let elapsed_before: u64 = self
-            .cloud_segments
-            .iter()
-            .take(self.cloud_current_segment)
-            .map(|segment| segment.duration_ms)
-            .sum();
-        let elapsed =
-            elapsed_before + position_in_current_ms.min(current_duration);
-        let progress = ((elapsed as f64 / total_ms as f64).clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
-        if (progress - self.playback_progress).abs() >= 0.001 {
-            self.playback_progress = progress;
-            self.playback_progress_changed();
-        }
-    }
-
-    fn reset_cloud_timeline(&mut self) {
-        self.cloud_segments.clear();
-        self.cloud_current_segment = 0;
-        if self.playback_seek_supported {
-            self.playback_seek_supported = false;
-            self.playback_seek_supported_changed();
-        }
-        if self.playback_progress != 0.0 {
-            self.playback_progress = 0.0;
-            self.playback_progress_changed();
-        }
+        self.audio_path = None;
+        self.play_next_cloud_segment();
     }
 
     fn toggle_pause(&mut self) {
@@ -959,7 +860,8 @@ impl FlowBackend {
             let _ = sender.send(system_speech::Command::Stop);
         }
         self.stop_audio();
-        self.reset_cloud_timeline();
+        self.audio_path = None;
+        self.queued_audio_paths.clear();
     }
 
     fn finish_reading(&mut self) {
@@ -969,7 +871,8 @@ impl FlowBackend {
         ) {
             return;
         }
-        self.reset_cloud_timeline();
+        self.audio_path = None;
+        self.queued_audio_paths.clear();
         self.set_state(PlaybackState::Finished);
         self.dismiss_after_delay();
     }
@@ -1089,6 +992,16 @@ impl FlowBackend {
             "popupDismissSeconds" => {
                 if let Ok(seconds) = value.parse::<f64>() {
                     self.settings.popup_dismiss_seconds = seconds.clamp(3.0, 30.0);
+                }
+            }
+            "playbackSpeed" => {
+                if let Ok(speed) = value.parse::<f64>() {
+                    let clamped = speed.clamp(0.5, 4.0);
+                    self.settings.playback_speed = clamped;
+                    if (self.playback_speed - clamped).abs() > f64::EPSILON {
+                        self.playback_speed = clamped;
+                        self.playback_speed_changed();
+                    }
                 }
             }
             "sameSelectionAction" => {

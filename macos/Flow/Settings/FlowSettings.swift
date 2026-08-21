@@ -107,6 +107,7 @@ struct FlowSettings: Codable, Equatable {
     var azureVoiceMode: AzureVoiceMode = .multilingual
     var googleVoiceName: String?
     var googleSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
+    var playbackSpeed: Float = 1
     var defaultLanguageTag = "en-US"
     var languageSwitchingEnabled = true
     var languageRoutes: [LanguageRoute] = []
@@ -117,6 +118,7 @@ struct FlowSettings: Codable, Equatable {
         case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction, wordHighlightingEnabled
         case azureVoiceName, azureSpeechRate, azureVoiceMode
         case googleVoiceName, googleSpeechRate
+        case playbackSpeed
         case defaultLanguageTag, languageSwitchingEnabled, languageRoutes
     }
 
@@ -136,6 +138,7 @@ struct FlowSettings: Codable, Equatable {
         azureVoiceMode = try values.decodeIfPresent(AzureVoiceMode.self, forKey: .azureVoiceMode) ?? .multilingual
         googleVoiceName = try values.decodeIfPresent(String.self, forKey: .googleVoiceName)
         googleSpeechRate = try values.decodeIfPresent(Float.self, forKey: .googleSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
+        playbackSpeed = min(max(try values.decodeIfPresent(Float.self, forKey: .playbackSpeed) ?? 1, 0.5), 4)
         defaultLanguageTag = try values.decodeIfPresent(String.self, forKey: .defaultLanguageTag) ?? "en-US"
         languageSwitchingEnabled = try values.decodeIfPresent(Bool.self, forKey: .languageSwitchingEnabled) ?? true
         languageRoutes = try values.decodeIfPresent([LanguageRoute].self, forKey: .languageRoutes) ?? []

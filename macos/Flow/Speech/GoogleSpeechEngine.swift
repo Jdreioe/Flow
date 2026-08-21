@@ -57,20 +57,19 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     var onFailure: ((String) -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
     var onReadingOffset: ((Double?) -> Void)?
-    var onPlaybackProgress: ((Double?) -> Void)?
-    let supportsSeek = true
     private var player: AVAudioPlayer?
     private var segments: [PlaybackSegment] = []
     private var currentIndex = -1
-    private var totalDuration: TimeInterval = 0
     private var synthesisTask: Task<Void, Never>?
     private var playbackTimer: Timer?
     private var activeWordTimings: [WordTiming] = []
     private var activeWordIndex: Int?
     private var activeReadingOffset: Int?
+    private var speedMultiplier: Float = 1
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         stop()
+        speedMultiplier = min(max(settings.playbackSpeed, 0.5), 4)
         guard let apiKey = GoogleCredentialsStore.load() else {
             onFailure?("Set up Google Cloud Text-to-Speech before choosing Google voice.")
             return
@@ -91,22 +90,11 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
 
     func pause() { player?.pause() }
     func resume() { player?.play() }
-    func seek(to fraction: Double) {
-        guard totalDuration > 0 else { return }
-        let clamped = min(max(fraction, 0), 1)
-        var remaining = clamped * totalDuration
-        for (index, segment) in segments.enumerated() {
-            if remaining <= segment.duration || index == segments.count - 1 {
-                if index == currentIndex {
-                    player?.currentTime = min(remaining, segment.duration)
-                } else {
-                    playSegment(at: index, offset: min(remaining, segment.duration), autoplay: player?.isPlaying ?? true)
-                }
-                reportProgress()
-                return
-            }
-            remaining -= segment.duration
-        }
+    func setSpeed(_ multiplier: Float) {
+        speedMultiplier = min(max(multiplier, 0.5), 4)
+        guard let player else { return }
+        player.enableRate = true
+        player.rate = speedMultiplier
     }
     func stop() {
         synthesisTask?.cancel()
@@ -115,7 +103,6 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         player = nil
         segments = []
         currentIndex = -1
-        totalDuration = 0
         playbackTimer?.invalidate()
         playbackTimer = nil
         activeWordTimings = []
@@ -123,7 +110,6 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         activeReadingOffset = nil
         onWordRange?(nil)
         onReadingOffset?(nil)
-        onPlaybackProgress?(nil)
     }
 
     private struct PlaybackSegment {
@@ -143,7 +129,6 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         }
         segments = measured
         currentIndex = -1
-        totalDuration = measured.reduce(0) { $0 + $1.duration }
         playSegment(at: 0)
     }
 
@@ -158,6 +143,8 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             let player = try AVAudioPlayer(data: segment.audio.data)
             player.delegate = self
             player.currentTime = min(max(offset, 0), segment.duration)
+            player.enableRate = true
+            player.rate = speedMultiplier
             self.player = player
             currentIndex = index
             activeWordTimings = segment.audio.wordTimings
@@ -176,17 +163,9 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         playbackTimer?.invalidate()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.updateWordHighlight()
-            self?.reportProgress()
         }
         RunLoop.main.add(timer, forMode: .common)
         playbackTimer = timer
-    }
-
-    private func reportProgress() {
-        guard totalDuration > 0 else { return }
-        var elapsed = segments.prefix(max(currentIndex, 0)).reduce(0) { $0 + $1.duration }
-        elapsed += player?.currentTime ?? 0
-        onPlaybackProgress?(min(elapsed / totalDuration, 1))
     }
 
     private struct SynthesisRequest: Encodable {

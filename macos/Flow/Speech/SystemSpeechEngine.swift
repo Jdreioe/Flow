@@ -9,12 +9,15 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
 
     var onFinished: (() -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
-    var onPlaybackProgress: ((Double?) -> Void)?
     private let synthesizer = AVSpeechSynthesizer()
     private var queuedUtterances = 0
     private var utteranceOffsets: [ObjectIdentifier: Int] = [:]
+    private var utteranceRates: [ObjectIdentifier: Float] = [:]
+    private var spokenQueue: [AVSpeechUtterance] = []
+    private var currentIndex = 0
+    private var speedMultiplier: Float = 1
     private var highlightsWords = false
-    private var totalCharacters = 0
+    private var isPaused = false
 
     override init() {
         super.init()
@@ -46,35 +49,62 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         synthesizer.stopSpeaking(at: .immediate)
         queuedUtterances = plan.sentences.count
         utteranceOffsets = [:]
+        utteranceRates = [:]
+        spokenQueue = []
+        currentIndex = 0
+        speedMultiplier = min(max(settings.playbackSpeed, 0.5), 4)
         highlightsWords = settings.wordHighlightingEnabled
-        totalCharacters = plan.sentences.reduce(0) { $0 + $1.text.utf16.count + 1 }
-        onPlaybackProgress?(totalCharacters > 0 ? 0 : nil)
         var offset = 0
         for sentence in plan.sentences {
             let utterance = AVSpeechUtterance(string: sentence.text)
             utterance.voice = sentence.route.systemVoiceIdentifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
                 ?? SystemSpeechEngine.defaultVoice(for: sentence.route.languageTag)
-            utterance.rate = sentence.route.systemSpeechRate
-            utteranceOffsets[ObjectIdentifier(utterance)] = offset
+            utterance.rate = min(sentence.route.systemSpeechRate * speedMultiplier, AVSpeechUtteranceMaximumSpeechRate)
+            let identifier = ObjectIdentifier(utterance)
+            utteranceOffsets[identifier] = offset
+            utteranceRates[identifier] = sentence.route.systemSpeechRate
+            spokenQueue.append(utterance)
             offset += sentence.text.utf16.count + 1
             synthesizer.speak(utterance)
         }
     }
 
+    func setSpeed(_ multiplier: Float) {
+        speedMultiplier = min(max(multiplier, 0.5), 4)
+        for utterance in spokenQueue {
+            utterance.rate = min(
+                (utteranceRates[ObjectIdentifier(utterance)] ?? 0) * speedMultiplier,
+                AVSpeechUtteranceMaximumSpeechRate)
+        }
+        // AVSpeechSynthesizer cannot change the rate of the active utterance,
+        // so the current sentence restarts with the new rate; later sentences
+        // simply speak with it. While paused only the rates are updated.
+        guard !isPaused, queuedUtterances > 0, currentIndex < spokenQueue.count else { return }
+        synthesizer.stopSpeaking(at: .immediate)
+        queuedUtterances = spokenQueue.count - currentIndex
+        for utterance in spokenQueue[currentIndex...] {
+            synthesizer.speak(utterance)
+        }
+    }
+
     func pause() {
+        isPaused = true
         synthesizer.pauseSpeaking(at: .immediate)
     }
 
     func resume() {
+        isPaused = false
         synthesizer.continueSpeaking()
     }
 
     func stop() {
         queuedUtterances = 0
         utteranceOffsets = [:]
-        totalCharacters = 0
-        onWordRange?(nil)
-        onPlaybackProgress?(nil)
+        utteranceRates = [:]
+        spokenQueue = []
+        currentIndex = 0
+        speedMultiplier = 1
+        isPaused = false
         synthesizer.stopSpeaking(at: .immediate)
     }
 
@@ -84,9 +114,8 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         utterance: AVSpeechUtterance,
     ) {
         guard let offset = utteranceOffsets[ObjectIdentifier(utterance)] else { return }
-        if totalCharacters > 0 {
-            let spoken = offset + characterRange.location
-            onPlaybackProgress?(min(Double(spoken) / Double(totalCharacters), 1))
+        if let index = spokenQueue.firstIndex(where: { ObjectIdentifier($0) == ObjectIdentifier(utterance) }) {
+            currentIndex = index
         }
         guard highlightsWords else { return }
         onWordRange?((offset + characterRange.location)..<(offset + characterRange.location + characterRange.length))
@@ -95,9 +124,6 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         utteranceOffsets.removeValue(forKey: ObjectIdentifier(utterance))
         queuedUtterances -= 1
-        if queuedUtterances == 0 {
-            onPlaybackProgress?(1)
-            onFinished?()
-        }
+        if queuedUtterances == 0 { onFinished?() }
     }
 }
