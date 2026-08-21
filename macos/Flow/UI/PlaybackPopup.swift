@@ -61,6 +61,18 @@ struct PlaybackPopupView: View {
                         .keyboardShortcut(.escape, modifiers: [])
                         .accessibilityLabel("Stop reading")
                 }
+                if model.textLanguageOverride != nil, model.overrideNeedsRoute,
+                   let firstRouteID = currentPlan?.sentences.first?.route.id {
+                    Picker("Read as", selection: Binding(
+                        get: { firstRouteID },
+                        set: { model.applyOverrideRoute($0) },
+                    )) {
+                        ForEach(model.settings.allLanguageRoutes) { route in
+                            Text(route.displayName).tag(route.id)
+                        }
+                    }
+                    .accessibilityLabel("Read the overridden language as")
+                }
                 if case let .message(message) = model.state {
                     Text(message)
                         .fixedSize(horizontal: false, vertical: true)
@@ -82,9 +94,13 @@ struct PlaybackPopupView: View {
 
     private var showsLanguageOverride: Bool {
         switch model.state {
-        case .preparing, .playing, .paused: true
+        case .preparing, .playing, .paused, .languageCheck: true
         default: false
         }
+    }
+
+    private var currentPlan: LanguageFlow.Plan? {
+        model.state == .languageCheck ? model.pendingLanguagePlan : model.languagePlan
     }
 
     private var title: String {

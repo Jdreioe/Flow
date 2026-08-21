@@ -11,7 +11,7 @@ enum LanguageFlow {
         let detectedLanguageTag: String?
         var route: FlowSettings.LanguageRoute
         var needsReview: Bool
-        let detectedButUnconfigured: Bool
+        var detectedButUnconfigured: Bool
     }
 
     struct Plan {
@@ -174,6 +174,17 @@ enum LanguageFlow {
             return true
         }
         return Plan(sentences: sentences.isEmpty ? singleSentence(text, settings: settings).sentences : sentences)
+    }
+
+    // Copy of the plan with every review flag cleared, for paths that must
+    // never block playback (see ADR 0003).
+    static func withoutReview(_ plan: Plan) -> Plan {
+        var plan = plan
+        for index in plan.sentences.indices {
+            plan.sentences[index].needsReview = false
+            plan.sentences[index].detectedButUnconfigured = false
+        }
+        return plan
     }
 
     private static func detect(_ text: String) -> (tag: String?, confidence: Double, lead: Double) {

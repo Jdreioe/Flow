@@ -57,12 +57,20 @@ screen-center.
 ### Language override
 
 - A language picker lives in the playback popup next to the **Language…**
-  button, defaulting to **Auto**.
+  button (until issue #4 adds that button, the picker stands alone),
+  defaulting to **Auto**. It is available during Language check too, so a
+  flagged selection can be overridden before playback starts.
 - When a specific language is picked, sentence detection is suspended for
-  the current selection: every sentence is read with that language's route,
-  falling back to the route picker if it has no route.
-- The override lasts until the next capture — nothing sticky survives into
-  the following playback. There is no override UI in settings.
+  the current selection: every sentence is read with that language's route.
+- If the overridden language has no configured route, an inline "Read as"
+  route picker appears in the popup; the chosen route applies immediately
+  and lasts as long as the override. It never silently falls back to the
+  default voice.
+- Restoring Auto re-runs detection but never blocks: review flags are
+  cleared and reading continues immediately (ADR 0003).
+- The override lasts until the next capture of *different* text — a
+  same-selection capture used for pause/resume preserves it. There is no
+  override UI in settings.
 
 ## Settings
 

@@ -309,6 +309,7 @@ ApplicationWindow {
                     visible: backend.state === "preparing"
                         || backend.state === "playing"
                         || backend.state === "paused"
+                        || backend.state === "languageCheck"
                     Layout.preferredWidth: 180
                     textRole: "text"
                     valueRole: "value"
@@ -328,6 +329,36 @@ ApplicationWindow {
                     }
                     onActivated: backend.set_text_language_override(currentValue)
                     Accessible.name: qsTr("Language override")
+                }
+
+                ComboBox {
+                    id: overrideRoutePicker
+                    visible: backend.text_language_override !== ""
+                        && backend.override_needs_route
+                    property string chosenRouteId: ""
+                    onVisibleChanged: if (!visible) chosenRouteId = ""
+                    Layout.preferredWidth: 260
+                    model: root.allRoutes()
+                    textRole: "languageTag"
+                    valueRole: "id"
+                    displayText: {
+                        let routes = model
+                        for (let index = 0; index < routes.length; ++index) {
+                            if (routes[index].id === chosenRouteId)
+                                return qsTr("Read as ") + root.languageName(routes[index].languageTag)
+                        }
+                        return qsTr("Read as…")
+                    }
+                    delegate: ItemDelegate {
+                        required property var modelData
+                        width: overrideRoutePicker.width
+                        text: root.languageName(modelData.languageTag)
+                    }
+                    onActivated: {
+                        chosenRouteId = currentValue
+                        backend.set_override_route(currentValue)
+                    }
+                    Accessible.name: qsTr("Read the overridden language as")
                 }
 
                 ScrollView {

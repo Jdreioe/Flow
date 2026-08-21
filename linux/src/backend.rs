@@ -83,6 +83,8 @@ pub struct FlowBackend {
     pending_plan_json_changed: qt_signal!(),
     text_language_override: qt_property!(QString; NOTIFY text_language_override_changed),
     text_language_override_changed: qt_signal!(),
+    override_needs_route: qt_property!(bool; NOTIFY override_needs_route_changed),
+    override_needs_route_changed: qt_signal!(),
     shortcut_status: qt_property!(QString; NOTIFY shortcut_status_changed),
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
@@ -143,28 +145,73 @@ pub struct FlowBackend {
             }
             self.text_language_override = tag;
             self.text_language_override_changed();
-            if matches!(
-                self.playback_state,
-                PlaybackState::Preparing | PlaybackState::Playing | PlaybackState::Paused
-            ) && !self.selected_text.is_empty()
-            {
-                let plan = language::plan_with_override(
-                    &self.selected_text,
-                    &self.settings,
-                    self.text_language_override.as_deref(),
-                );
-                if plan.needs_language_check() {
-                    // Restoring Auto can surface uncertain or unconfigured
-                    // sentences, which must go through Language check like
-                    // any fresh capture.
-                    self.cancel_dismiss();
-                    self.stop_active_playback();
-                    self.pending_plan = Some(plan);
-                    self.refresh_pending_plan();
-                    self.set_state(PlaybackState::LanguageCheck);
-                } else {
-                    self.start_plan(self.selected_text.clone(), plan);
+            self.refresh_override_needs_route();
+            if !self.selected_text.is_empty() {
+                match self.playback_state {
+                    PlaybackState::Preparing
+                    | PlaybackState::Playing
+                    | PlaybackState::Paused => {
+                        // Restoring Auto never blocks: read immediately even
+                        // when detection would flag sentences for review.
+                        let plan = match &self.text_language_override {
+                            Some(tag) => language::plan_with_override(
+                                &self.selected_text,
+                                &self.settings,
+                                Some(tag),
+                            ),
+                            None => language::plan(&self.selected_text, &self.settings)
+                                .without_review(),
+                        };
+                        self.start_plan(self.selected_text.clone(), plan);
+                    }
+                    PlaybackState::LanguageCheck => {
+                        let plan = match &self.text_language_override {
+                            Some(tag) => language::plan_with_override(
+                                &self.selected_text,
+                                &self.settings,
+                                Some(tag),
+                            ),
+                            None => language::plan(&self.selected_text, &self.settings),
+                        };
+                        self.pending_plan = Some(plan);
+                        self.refresh_pending_plan();
+                    }
+                    _ => {}
                 }
+            }
+        }
+    ),
+    set_override_route: qt_method!(
+        fn set_override_route(&mut self, route_id: QString) {
+            let Some(_) = self.text_language_override else {
+                return;
+            };
+            let Ok(route_id) = Uuid::parse_str(&route_id.to_string()) else {
+                return;
+            };
+            let route = self
+                .settings
+                .all_language_routes()
+                .into_iter()
+                .find(|route| route.id == route_id);
+            let Some(route) = route else {
+                return;
+            };
+            if self.pending_plan.is_some() {
+                let mut plan = self.pending_plan.take().unwrap();
+                for sentence in plan.sentences.iter_mut() {
+                    sentence.route = route.clone();
+                    sentence.needs_review = false;
+                }
+                self.pending_plan = Some(plan);
+                self.refresh_pending_plan();
+            } else if let Some(mut plan) = self.plan.take() {
+                for sentence in plan.sentences.iter_mut() {
+                    sentence.route = route.clone();
+                    sentence.needs_review = false;
+                }
+                self.plan = Some(plan.clone());
+                self.start_plan(self.selected_text.clone(), plan);
             }
         }
     ),
@@ -271,6 +318,7 @@ pub struct FlowBackend {
     plan: Option<Plan>,
     pending_plan: Option<Plan>,
     text_language_override: Option<String>,
+    override_needs_route: bool,
     system_voices: Vec<SystemVoice>,
     azure_voices: Vec<AzureVoice>,
     google_voices: Vec<GoogleVoice>,
@@ -308,6 +356,8 @@ impl Default for FlowBackend {
             pending_plan_json_changed: Default::default(),
             text_language_override: QString::default(),
             text_language_override_changed: Default::default(),
+            override_needs_route: false,
+            override_needs_route_changed: Default::default(),
             shortcut_status: "Registering global shortcut…".into(),
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
@@ -326,6 +376,7 @@ impl Default for FlowBackend {
             playback_failed: Default::default(),
             confirm_language_check: Default::default(),
             set_text_language_override: Default::default(),
+            set_override_route: Default::default(),
             choose_route: Default::default(),
             enable_language: Default::default(),
             update_setting: Default::default(),
@@ -345,6 +396,7 @@ impl Default for FlowBackend {
             plan: None,
             pending_plan: None,
             text_language_override: None,
+            override_needs_route: false,
             system_voices: Vec::new(),
             azure_voices: Vec::new(),
             google_voices: Vec::new(),
@@ -499,9 +551,12 @@ impl FlowBackend {
         }
 
         // The override lasts for the current selection only; a fresh capture
-        // always starts from Auto again.
+        // always starts from Auto again. The same-selection pause/resume
+        // early-return above intentionally preserves the override: the text
+        // did not change.
         self.text_language_override = None;
         self.text_language_override_changed();
+        self.refresh_override_needs_route();
 
         let plan = language::plan(&text, &self.settings);
         if plan.needs_language_check() {
@@ -514,6 +569,17 @@ impl FlowBackend {
             self.set_popup_visible(true);
         } else {
             self.start_plan(text, plan);
+        }
+    }
+
+    fn refresh_override_needs_route(&mut self) {
+        let unrouted = self
+            .text_language_override
+            .as_deref()
+            .is_some_and(|tag| self.settings.language_route(tag).is_none());
+        if self.override_needs_route != unrouted {
+            self.override_needs_route = unrouted;
+            self.override_needs_route_changed();
         }
     }
 

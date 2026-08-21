@@ -31,6 +31,22 @@ impl Plan {
     pub fn needs_language_check(&self) -> bool {
         self.sentences.iter().any(|sentence| sentence.needs_review)
     }
+
+    /// Copy of the plan with every review flag cleared, for paths that must
+    /// never block playback (see ADR 0003).
+    pub fn without_review(&self) -> Plan {
+        Plan {
+            sentences: self
+                .sentences
+                .iter()
+                .map(|sentence| Sentence {
+                    needs_review: false,
+                    detected_but_unconfigured: false,
+                    ..sentence.clone()
+                })
+                .collect(),
+        }
+    }
 }
 
 pub fn single_sentence(text: &str, settings: &Settings) -> Plan {
@@ -253,5 +269,18 @@ mod tests {
         let unrouted = plan_with_override("Hello.", &settings, Some("fr-FR"));
         assert_eq!(unrouted.sentences[0].route.language_tag, "en-US");
         assert!(!unrouted.needs_language_check());
+    }
+
+    #[test]
+    fn without_review_clears_every_flag() {
+        let settings = Settings::default();
+        let plan = plan_with_override("Denne sætning er på dansk.", &settings, None)
+            .without_review();
+
+        assert!(!plan.needs_language_check());
+        assert!(plan
+            .sentences
+            .iter()
+            .all(|sentence| !sentence.detected_but_unconfigured));
     }
 }

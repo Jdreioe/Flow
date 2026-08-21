@@ -88,6 +88,7 @@ final class FlowModel: ObservableObject {
     @Published private(set) var languagePlan: LanguageFlow.Plan?
     @Published private(set) var pendingLanguagePlan: LanguageFlow.Plan?
     @Published private(set) var textLanguageOverride: String?
+    @Published private(set) var overrideNeedsRoute = false
     @Published var settings: FlowSettings {
         didSet {
             saveSettings()
@@ -279,18 +280,51 @@ final class FlowModel: ObservableObject {
     func setTextLanguageOverride(_ tag: String?) {
         guard tag != textLanguageOverride else { return }
         textLanguageOverride = tag
-        guard state == .preparing || state == .playing || state == .paused,
-              !selectedText.isEmpty else { return }
-        let plan = LanguageFlow.plan(text: selectedText, settings: settings, overrideTag: tag)
-        if plan.needsLanguageCheck {
-            // Restoring Auto can surface uncertain or unconfigured sentences,
-            // which must go through Language check like any fresh capture.
-            activeSpeech?.stop()
-            pendingLanguagePlan = plan
-            state = .languageCheck
-            return
+        overrideNeedsRoute = tag.map { settings.languageRoute(for: $0) == nil } ?? false
+        switch state {
+        case .preparing, .playing, .paused:
+            guard !selectedText.isEmpty else { return }
+            let plan: LanguageFlow.Plan
+            if let tag {
+                plan = LanguageFlow.plan(text: selectedText, settings: settings, overrideTag: tag)
+            } else {
+                // Restoring Auto never blocks: read immediately even when
+                // detection would flag sentences for review (ADR 0003).
+                plan = LanguageFlow.withoutReview(
+                    LanguageFlow.plan(text: selectedText, settings: settings))
+            }
+            startReading(text: selectedText, plan: plan)
+        case .languageCheck:
+            guard !selectedText.isEmpty else { return }
+            if let tag {
+                pendingLanguagePlan = LanguageFlow.plan(
+                    text: selectedText, settings: settings, overrideTag: tag)
+            } else {
+                pendingLanguagePlan = LanguageFlow.plan(text: selectedText, settings: settings)
+            }
+        default:
+            break
         }
-        startReading(text: selectedText, plan: plan)
+    }
+
+    func applyOverrideRoute(_ routeID: UUID) {
+        guard textLanguageOverride != nil,
+              let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }) else { return }
+        if state == .languageCheck {
+            guard var plan = pendingLanguagePlan else { return }
+            for index in plan.sentences.indices {
+                plan.sentences[index].route = route
+                plan.sentences[index].needsReview = false
+            }
+            pendingLanguagePlan = plan
+        } else {
+            guard var plan = languagePlan else { return }
+            for index in plan.sentences.indices {
+                plan.sentences[index].route = route
+                plan.sentences[index].needsReview = false
+            }
+            startReading(text: selectedText, plan: plan)
+        }
     }
 
     private func startReading(text: String, plan: LanguageFlow.Plan) {
