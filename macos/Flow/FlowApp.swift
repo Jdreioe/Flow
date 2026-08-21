@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         popup = PlaybackPopupController(model: model)
         settingsWindow = SettingsWindowController(model: model)
+        Task { [weak self] in
+            await self?.checkForUpdate()
+        }
         model.onPopupVisibilityChanged = { [weak self] isVisible in
             guard let self else { return }
             if isVisible {
@@ -58,6 +61,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             model.hotKeyError = "\(preset.title) is already in use. Choose another Flow shortcut."
         }
+    }
+
+    private func checkForUpdate() async {
+        guard let tag = await UpdateChecker.check() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Flow \(tag) is available"
+        alert.informativeText = "You are running Flow \(UpdateChecker.currentVersion)."
+        alert.addButton(withTitle: "View Release")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(UpdateChecker.releasesPage)
+        }
+    }
+}
+
+enum UpdateChecker {
+    static let releasesPage = URL(string: "https://github.com/jdreioe/Flow/releases/latest")!
+    private static let apiURL = URL(string: "https://api.github.com/repos/jdreioe/Flow/releases/latest")!
+
+    private struct Release: Decodable {
+        let tagName: String
+
+        private enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+        }
+    }
+
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    static func check() async -> String? {
+        var request = URLRequest(url: apiURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Flow", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              let release = try? JSONDecoder().decode(Release.self, from: data) else { return nil }
+        return isNewer(release.tagName, than: currentVersion) ? release.tagName : nil
+    }
+
+    static func isNewer(_ candidate: String, than current: String) -> Bool {
+        func components(_ version: String) -> [Int] {
+            version.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+                .split(separator: ".")
+                .map { Int($0.prefix(while: \.isNumber)) ?? 0 }
+        }
+        let candidateComponents = components(candidate)
+        let currentComponents = components(current)
+        for index in 0..<max(candidateComponents.count, currentComponents.count) {
+            let candidatePart = index < candidateComponents.count ? candidateComponents[index] : 0
+            let currentPart = index < currentComponents.count ? currentComponents[index] : 0
+            if candidatePart != currentPart { return candidatePart > currentPart }
+        }
+        return false
     }
 }
 
@@ -638,12 +698,89 @@ enum LanguageFlow {
         )])
     }
 
+    // Rejoins the hard line wraps that PDFs and some editors insert mid-sentence
+    // so text-to-speech does not pause at every visual line break. Blank lines
+    // and list items keep their breaks because those pauses are intentional.
+    static func reflow(_ text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        var paragraphs: [String] = []
+        var fragments: [String] = []
+
+        func flush() {
+            guard !fragments.isEmpty else { return }
+            paragraphs.append(fragments.joined(separator: " "))
+            fragments.removeAll()
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                flush()
+                continue
+            }
+            if startsNewBlock(trimmed) {
+                flush()
+                // Open a new fragment instead of closing the paragraph so the
+                // wrapped lines after a bullet or number keep flowing into it.
+                fragments.append(trimmed)
+                continue
+            }
+            if let previous = fragments.last {
+                fragments[fragments.count - 1] = join(previous, nextLine: trimmed)
+            } else {
+                fragments.append(trimmed)
+            }
+        }
+        flush()
+        return paragraphs.joined(separator: "\n\n")
+    }
+
+    private static func startsNewBlock(_ line: String) -> Bool {
+        let characters = Array(line)
+        guard let first = characters.first else { return false }
+        if ["•", "·", "‣", "⁃", "▪", "◦"].contains(where: line.hasPrefix) {
+            return true
+        }
+        if "-–—*".contains(first), characters.count > 1, characters[1].isWhitespace {
+            return true
+        }
+        guard first.isNumber else { return false }
+        guard let index = characters.firstIndex(where: { !$0.isNumber }) else { return false }
+        return ".)".contains(characters[index]) || characters[index].isWhitespace
+    }
+
+    private static func join(_ previous: String, nextLine: String) -> String {
+        let previousCharacters = Array(previous)
+        guard let last = previousCharacters.last else { return previous + " " + nextLine }
+        let nextStartsLowercase = nextLine.first?.isLowercase == true || nextLine.first?.isNumber == true
+        if last == "-", nextStartsLowercase {
+            // Keep the hyphen only when it is part of a longer compound such as
+            // "system-of-interest"; drop it when it was inserted by line wrapping.
+            let continuationWord = nextLine.prefix(while: { !$0.isWhitespace })
+            if continuationWord.contains("-") {
+                return previous + nextLine
+            }
+            return String(previous.dropLast()) + nextLine
+        }
+        // A sentence end mid-paragraph keeps a break; NLTokenizer still merges
+        // reading into natural sentences without wrap-induced pauses elsewhere.
+        let previousEndsSentence = ".!?…".contains(last)
+        let previousEndsWithClosingQuote = "\"'”’)]»".contains(last)
+            && previous.dropLast().last.map { ".!?…".contains($0) } == true
+        let joinsNaturally = nextStartsLowercase || nextLine.hasPrefix("(")
+        if (previousEndsSentence && !previousEndsWithClosingQuote) || !joinsNaturally {
+            return previous + "\n" + nextLine
+        }
+        return previous + " " + nextLine
+    }
+
     static func plan(text: String, settings: FlowSettings) -> Plan {
+        let preparedText = reflow(text)
         let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
+        tokenizer.string = preparedText
         var sentences: [Sentence] = []
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let sentence = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        tokenizer.enumerateTokens(in: preparedText.startIndex..<preparedText.endIndex) { range, _ in
+            let sentence = String(preparedText[range]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !sentence.isEmpty else { return true }
             let detection = detect(sentence)
             // Detect from the first reading. A detected, unconfigured language must
@@ -994,6 +1131,17 @@ enum GoogleVoiceCatalog {
         let ssmlGender: String
 
         var id: String { name }
+
+        var displayName: String {
+            var parts = name.split(separator: "-")
+            if let language = parts.first, (2...3).contains(language.count), language.allSatisfy(\.isLetter) {
+                parts.removeFirst()
+                if let region = parts.first, region.count == 2, region.allSatisfy(\.isUppercase) {
+                    parts.removeFirst()
+                }
+            }
+            return parts.joined(separator: "-")
+        }
 
         func supports(languageTag: String) -> Bool {
             let base = languageTag.split(separator: "-").first?.lowercased()
@@ -1826,7 +1974,7 @@ private struct LanguageRouteEditor: View {
                     Text("Azure speech rate")
                 }
                 if matchingAzureVoices.isEmpty {
-                    Text("No Azure voices support (route.displayName) in this resource's region.")
+                    Text("No Azure voices support \(route.displayName) in this resource's region.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -1835,7 +1983,7 @@ private struct LanguageRouteEditor: View {
                 Picker("Google voice", selection: $route.googleVoiceName) {
                     Text("Google default voice").tag(String?.none)
                     ForEach(matchingGoogleVoices) { voice in
-                        Text(voice.name).tag(String?.some(voice.name))
+                        Text(voice.displayName).tag(String?.some(voice.name))
                     }
                 }
                 Slider(value: $route.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
@@ -1967,7 +2115,7 @@ private struct SpeechConfigurationView: View {
                 Picker("Google voice", selection: $model.settings.googleVoiceName) {
                     Text("Google default voice").tag(String?.none)
                     ForEach(defaultGoogleVoices) { voice in
-                        Text(voice.name).tag(String?.some(voice.name))
+                        Text(voice.displayName).tag(String?.some(voice.name))
                     }
                 }
             }
