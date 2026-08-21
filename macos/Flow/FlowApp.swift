@@ -44,7 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onUpdatesRequested = { [weak self] in
             self?.updater.checkForUpdates()
         }
+        model.onWhatsNewRequested = { [weak self] in
+            self?.showWhatsNew()
+        }
         installHotKey(model.settings.hotKey)
+        ChangelogWindowController.presentAfterUpdate()
+    }
+
+    private func showWhatsNew() {
+        ChangelogWindowController.showAll()
     }
 
     private func installHotKey(_ preset: HotKeyPreset) {
@@ -106,6 +114,7 @@ final class FlowModel: ObservableObject {
     var onHotKeyChanged: ((HotKeyPreset) -> Void)?
     var onSettingsRequested: (() -> Void)?
     var onUpdatesRequested: (() -> Void)?
+    var onWhatsNewRequested: (() -> Void)?
 
     private let systemSpeech = SystemSpeechEngine()
     private let azureSpeech = AzureSpeechEngine()
@@ -171,6 +180,10 @@ final class FlowModel: ObservableObject {
 
     func checkForUpdates() {
         onUpdatesRequested?()
+    }
+
+    func openWhatsNew() {
+        onWhatsNewRequested?()
     }
 
     func playTestVoice() {

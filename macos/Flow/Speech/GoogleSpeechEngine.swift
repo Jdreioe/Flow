@@ -66,6 +66,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     private var activeWordIndex: Int?
     private var activeReadingOffset: Int?
     private var speedMultiplier: Float = 1
+    private var activeSegmentSpeed: Float?
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         stop()
@@ -92,7 +93,8 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     func resume() { player?.play() }
     func setSpeed(_ multiplier: Float) {
         speedMultiplier = min(max(multiplier, 0.5), 4)
-        guard let player else { return }
+        // Languages with their own speed keep it; the rest follow the global.
+        guard let player, activeSegmentSpeed == nil else { return }
         player.enableRate = true
         player.rate = speedMultiplier
     }
@@ -108,6 +110,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         activeWordTimings = []
         activeWordIndex = nil
         activeReadingOffset = nil
+        activeSegmentSpeed = nil
         onWordRange?(nil)
         onReadingOffset?(nil)
     }
@@ -144,7 +147,8 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             player.delegate = self
             player.currentTime = min(max(offset, 0), segment.duration)
             player.enableRate = true
-            player.rate = speedMultiplier
+            activeSegmentSpeed = segment.audio.speedOverride
+            player.rate = segment.audio.speedOverride ?? speedMultiplier
             self.player = player
             currentIndex = index
             activeWordTimings = segment.audio.wordTimings
@@ -203,6 +207,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     private struct AudioSegment {
         let data: Data
         let wordTimings: [WordTiming]
+        let speedOverride: Float?
     }
 
     private static func synthesize(plan: LanguageFlow.Plan, apiKey: String, includeWordTimings: Bool) async throws -> [AudioSegment] {
@@ -249,7 +254,11 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
                         range: (sentenceOffset + chunk.offset + range.lowerBound)..<(sentenceOffset + chunk.offset + range.upperBound)
                     )
                 }.sorted { $0.timeSeconds < $1.timeSeconds }
-                audio.append(.init(data: segment, wordTimings: wordTimings))
+                audio.append(.init(
+                    data: segment,
+                    wordTimings: wordTimings,
+                    speedOverride: sentence.route.playbackSpeed.map { min(max($0, 0.5), 4) },
+                ))
             }
             sentenceOffset += sentence.text.utf16.count + 1
         }

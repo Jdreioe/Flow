@@ -95,7 +95,8 @@ pub struct FlowBackend {
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
 
-    play_cloud: qt_signal!(file_url: QString, word_timings_json: QString),
+    play_cloud: qt_signal!(file_url: QString, word_timings_json: QString, rate: f64),
+    segment_rate: qt_signal!(rate: f64),
     pause_playback: qt_signal!(),
     resume_playback: qt_signal!(),
     stop_audio: qt_signal!(),
@@ -187,8 +188,11 @@ pub struct FlowBackend {
                     if self.selected_text.is_empty() {
                         return;
                     }
-                    let plan =
-                        language::plan_with_override(&self.selected_text, &self.settings, Some(tag));
+                    let plan = language::plan_with_override(
+                        &self.selected_text,
+                        &self.settings,
+                        Some(tag),
+                    );
                     if self.override_needs_route {
                         // Never speak with a guessed voice: hold playback
                         // until a route is chosen for this language.
@@ -250,7 +254,11 @@ pub struct FlowBackend {
                 return;
             }
 
-            let Some(sentence) = plan.sentences.iter_mut().find(|sentence| sentence.needs_review) else {
+            let Some(sentence) = plan
+                .sentences
+                .iter_mut()
+                .find(|sentence| sentence.needs_review)
+            else {
                 return;
             };
             sentence.route = route;
@@ -351,6 +359,7 @@ pub struct FlowBackend {
             self.settings.playback_speed = clamped;
             self.playback_speed = clamped;
             self.playback_speed_changed();
+            self.segment_rate(clamped);
             self.persist_settings();
         }
     ),
@@ -369,6 +378,7 @@ pub struct FlowBackend {
     audio_path: Option<TempPath>,
     queued_audio_paths: VecDeque<TempPath>,
     queued_word_timings: VecDeque<Vec<google::WordTiming>>,
+    queued_segment_speeds: VecDeque<Option<f64>>,
     shortcut_commands: Option<mpsc::UnboundedSender<shortcuts::Command>>,
     system_speech_commands: Option<std::sync::mpsc::Sender<system_speech::Command>>,
     services_started: bool,
@@ -414,6 +424,7 @@ impl Default for FlowBackend {
             configuration_error: QString::default(),
             configuration_error_changed: Default::default(),
             play_cloud: Default::default(),
+            segment_rate: Default::default(),
             pause_playback: Default::default(),
             resume_playback: Default::default(),
             stop_audio: Default::default(),
@@ -455,6 +466,7 @@ impl Default for FlowBackend {
             audio_path: None,
             queued_audio_paths: VecDeque::new(),
             queued_word_timings: VecDeque::new(),
+            queued_segment_speeds: VecDeque::new(),
             playback_speed: settings.playback_speed,
             shortcut_commands: None,
             shortcut_commands: None,
@@ -649,8 +661,9 @@ impl FlowBackend {
                 }
             }
         }
-        self.detected_languages_json =
-            serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()).into();
+        self.detected_languages_json = serde_json::to_string(&tags)
+            .unwrap_or_else(|_| "[]".into())
+            .into();
         self.detected_languages_json_changed();
         self.manual_route_sentence_text = self
             .plan
@@ -718,22 +731,24 @@ impl FlowBackend {
         let settings = self.settings.clone();
         let current_generation = Arc::clone(&self.playback_generation);
         let pointer = QPointer::from(&*self);
-        let deliver = queued_callback(move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>)>, String>| {
-            if current_generation.load(Ordering::SeqCst) != generation {
-                return;
-            }
-            if let Some(backend) = pointer.as_pinned() {
-                let mut backend = backend.borrow_mut();
-                match result {
-                    Ok(audio) => backend.play_cloud_audio(audio),
-                    Err(message) => backend.show_message(message),
+        let deliver = queued_callback(
+            move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>, Option<f64>)>, String>| {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
                 }
-            }
-        });
+                if let Some(backend) = pointer.as_pinned() {
+                    let mut backend = backend.borrow_mut();
+                    match result {
+                        Ok(audio) => backend.play_cloud_audio(audio),
+                        Err(message) => backend.show_message(message),
+                    }
+                }
+            },
+        );
         std::thread::spawn(move || {
             let result = azure::load_key()
                 .and_then(|key| azure::synthesize(&endpoint, &key, &plan, &settings))
-                .map(|audio| vec![(audio, Vec::new())])
+                .map(|audio| vec![(audio, Vec::new(), None)])
                 .map_err(|_| {
                     "Azure could not synthesize this selection. Check the endpoint, key, and voice."
                         .to_owned()
@@ -750,22 +765,31 @@ impl FlowBackend {
         let current_generation = Arc::clone(&self.playback_generation);
         let settings = self.settings.clone();
         let pointer = QPointer::from(&*self);
-        let deliver = queued_callback(move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>)>, String>| {
-            if current_generation.load(Ordering::SeqCst) != generation {
-                return;
-            }
-            if let Some(backend) = pointer.as_pinned() {
-                let mut backend = backend.borrow_mut();
-                match result {
-                    Ok(audio) => backend.play_cloud_audio(audio),
-                    Err(message) => backend.show_message(message),
+        let deliver = queued_callback(
+            move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>, Option<f64>)>, String>| {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
                 }
-            }
-        });
+                if let Some(backend) = pointer.as_pinned() {
+                    let mut backend = backend.borrow_mut();
+                    match result {
+                        Ok(audio) => backend.play_cloud_audio(audio),
+                        Err(message) => backend.show_message(message),
+                    }
+                }
+            },
+        );
         std::thread::spawn(move || {
             let result = google::load_key()
                 .and_then(|key| google::synthesize(&key, &plan, settings.word_highlighting_enabled))
-                .map(|segments| segments.into_iter().map(|segment| (segment.audio, segment.word_timings)).collect())
+                .map(|segments| {
+                    segments
+                        .into_iter()
+                        .map(|segment| {
+                            (segment.audio, segment.word_timings, segment.playback_speed)
+                        })
+                        .collect()
+                })
                 .map_err(|_| {
                     "Google Cloud could not synthesize this selection. Check the API key and voice."
                         .to_owned()
@@ -774,25 +798,30 @@ impl FlowBackend {
         });
     }
 
-    fn play_cloud_audio(&mut self, audio_segments: Vec<(Vec<u8>, Vec<google::WordTiming>)>) {
+    fn play_cloud_audio(
+        &mut self,
+        audio_segments: Vec<(Vec<u8>, Vec<google::WordTiming>, Option<f64>)>,
+    ) {
         let result = audio_segments
             .into_iter()
-            .map(|(audio, timings)| {
+            .map(|(audio, timings, speed)| {
                 tempfile::Builder::new()
                     .prefix("flow-")
                     .suffix(".mp3")
                     .tempfile()
                     .and_then(|mut file| {
                         file.write_all(&audio)?;
-                        Ok((file.into_temp_path(), timings))
+                        Ok((file.into_temp_path(), timings, speed))
                     })
             })
             .collect::<Result<Vec<_>, _>>();
         match result {
             Ok(paths) if !paths.is_empty() => {
-                let (audio_paths, word_timings): (VecDeque<_>, VecDeque<_>) = paths.into_iter().unzip();
+                let (audio_paths, rest): (VecDeque<_>, VecDeque<_>) = paths.into_iter().unzip();
+                let (word_timings, speeds): (VecDeque<_>, VecDeque<_>) = rest.into_iter().unzip();
                 self.queued_audio_paths = audio_paths;
                 self.queued_word_timings = word_timings;
+                self.queued_segment_speeds = speeds;
                 self.play_next_cloud_segment();
             }
             _ => self
@@ -805,9 +834,14 @@ impl FlowBackend {
         if let Some(path) = &self.audio_path {
             let url = format!("file://{}", path.display());
             let timings = self.queued_word_timings.pop_front().unwrap_or_default();
+            let speed = self
+                .queued_segment_speeds
+                .pop_front()
+                .unwrap_or(None)
+                .unwrap_or(self.settings.playback_speed);
             let timings_json = serde_json::to_string(&timings).unwrap_or_else(|_| "[]".into());
             self.set_state(PlaybackState::Playing);
-            self.play_cloud(url.into(), timings_json.into());
+            self.play_cloud(url.into(), timings_json.into(), speed.clamp(0.5, 4.0));
         } else {
             self.finish_reading();
         }
@@ -862,6 +896,7 @@ impl FlowBackend {
         self.stop_audio();
         self.audio_path = None;
         self.queued_audio_paths.clear();
+        self.queued_segment_speeds.clear();
     }
 
     fn finish_reading(&mut self) {
@@ -873,6 +908,7 @@ impl FlowBackend {
         }
         self.audio_path = None;
         self.queued_audio_paths.clear();
+        self.queued_segment_speeds.clear();
         self.set_state(PlaybackState::Finished);
         self.dismiss_after_delay();
     }
@@ -1002,6 +1038,7 @@ impl FlowBackend {
                         self.playback_speed = clamped;
                         self.playback_speed_changed();
                     }
+                    self.segment_rate(clamped);
                 }
             }
             "sameSelectionAction" => {
@@ -1098,6 +1135,13 @@ impl FlowBackend {
                     if let Ok(rate) = value.parse::<f64>() {
                         route.google_speech_rate = rate.clamp(-1.0, 1.0);
                     }
+                }
+                "playbackSpeed" => {
+                    route.playback_speed = if value.is_empty() {
+                        None
+                    } else {
+                        value.parse::<f64>().ok().map(|speed| speed.clamp(0.5, 4.0))
+                    };
                 }
                 _ => return,
             }

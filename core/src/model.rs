@@ -67,6 +67,13 @@ pub struct LanguageRoute {
     pub azure_speech_rate: f64,
     pub google_voice_name: Option<String>,
     pub google_speech_rate: f64,
+    pub playback_speed: Option<f64>,
+}
+
+impl LanguageRoute {
+    pub fn effective_playback_speed(&self, global: f64) -> f64 {
+        self.playback_speed.unwrap_or(global).clamp(0.5, 4.0)
+    }
 }
 
 impl LanguageRoute {
@@ -90,6 +97,7 @@ impl Default for LanguageRoute {
             azure_speech_rate: 0.0,
             google_voice_name: None,
             google_speech_rate: 0.0,
+            playback_speed: None,
         }
     }
 }
@@ -153,6 +161,7 @@ impl Settings {
             azure_speech_rate: self.azure_speech_rate,
             google_voice_name: self.google_voice_name.clone(),
             google_speech_rate: self.google_speech_rate,
+            playback_speed: None,
         }
     }
 

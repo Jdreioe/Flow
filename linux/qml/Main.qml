@@ -141,7 +141,7 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onPlay_cloud(fileUrl, wordTimingsJson) {
+        function onPlay_cloud(fileUrl, wordTimingsJson, rate) {
             cloudPlayerLoader.active = true
             let player = cloudPlayer()
             if (!player) {
@@ -149,12 +149,18 @@ ApplicationWindow {
                 return
             }
             player.source = fileUrl
-            player.playbackRate = backend.playback_speed
+            player.playbackRate = rate
             root.wordTimings = JSON.parse(wordTimingsJson)
             root.currentWordStart = -1
             root.currentWordEnd = -1
             cloudActive = true
             player.play()
+        }
+
+        function onSegment_rate(rate) {
+            let player = cloudPlayer()
+            if (cloudActive && player)
+                player.playbackRate = rate
         }
 
         function onPause_playback() {
@@ -745,6 +751,22 @@ ApplicationWindow {
                                             : 0
                                         onActivated: backend.update_route(modelData.id, "googleVoiceName",
                                             currentIndex === 0 ? "" : currentText)
+                                    }
+                                    RowLayout {
+                                        visible: parent.parent.expanded
+                                        Label { text: qsTr("Speed") }
+                                        ComboBox {
+                                            id: routeSpeedPicker
+                                            Layout.fillWidth: true
+                                            property var speeds: [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]
+                                            model: [qsTr("Same as Language Flow")].concat(
+                                                speeds.map(function(speed) { return Number(speed.toFixed(2)).toString() + "×" }))
+                                            currentIndex: modelData.playbackSpeed !== null
+                                                ? 1 + speeds.indexOf(modelData.playbackSpeed)
+                                                : 0
+                                            onActivated: backend.update_route(modelData.id, "playbackSpeed",
+                                                currentIndex === 0 ? "" : String(speeds[currentIndex - 1]))
+                                        }
                                     }
                                     Button {
                                         visible: parent.parent.expanded

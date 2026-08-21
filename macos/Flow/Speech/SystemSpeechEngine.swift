@@ -13,6 +13,7 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     private var queuedUtterances = 0
     private var utteranceOffsets: [ObjectIdentifier: Int] = [:]
     private var utteranceRates: [ObjectIdentifier: Float] = [:]
+    private var speedOverrides: [ObjectIdentifier: Float] = [:]
     private var spokenQueue: [AVSpeechUtterance] = []
     private var currentIndex = 0
     private var speedMultiplier: Float = 1
@@ -50,6 +51,7 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         queuedUtterances = plan.sentences.count
         utteranceOffsets = [:]
         utteranceRates = [:]
+        speedOverrides = [:]
         spokenQueue = []
         currentIndex = 0
         speedMultiplier = min(max(settings.playbackSpeed, 0.5), 4)
@@ -59,8 +61,11 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
             let utterance = AVSpeechUtterance(string: sentence.text)
             utterance.voice = sentence.route.systemVoiceIdentifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
                 ?? SystemSpeechEngine.defaultVoice(for: sentence.route.languageTag)
-            utterance.rate = min(sentence.route.systemSpeechRate * speedMultiplier, AVSpeechUtteranceMaximumSpeechRate)
             let identifier = ObjectIdentifier(utterance)
+            if let overrideSpeed = sentence.route.playbackSpeed {
+                speedOverrides[identifier] = min(max(overrideSpeed, 0.5), 4)
+            }
+            utterance.rate = rate(for: identifier, baseRate: sentence.route.systemSpeechRate)
             utteranceOffsets[identifier] = offset
             utteranceRates[identifier] = sentence.route.systemSpeechRate
             spokenQueue.append(utterance)
@@ -69,12 +74,17 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         }
     }
 
+    private func rate(for identifier: ObjectIdentifier, baseRate: Float) -> Float {
+        let effective = speedOverrides[identifier] ?? speedMultiplier
+        return min(baseRate * effective, AVSpeechUtteranceMaximumSpeechRate)
+    }
+
     func setSpeed(_ multiplier: Float) {
         speedMultiplier = min(max(multiplier, 0.5), 4)
         for utterance in spokenQueue {
-            utterance.rate = min(
-                (utteranceRates[ObjectIdentifier(utterance)] ?? 0) * speedMultiplier,
-                AVSpeechUtteranceMaximumSpeechRate)
+            let identifier = ObjectIdentifier(utterance)
+            guard let baseRate = utteranceRates[identifier] else { continue }
+            utterance.rate = rate(for: identifier, baseRate: baseRate)
         }
         // AVSpeechSynthesizer cannot change the rate of the active utterance,
         // so the current sentence restarts with the new rate; later sentences
@@ -101,6 +111,7 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         queuedUtterances = 0
         utteranceOffsets = [:]
         utteranceRates = [:]
+        speedOverrides = [:]
         spokenQueue = []
         currentIndex = 0
         speedMultiplier = 1

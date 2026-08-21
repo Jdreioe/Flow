@@ -222,9 +222,22 @@ private struct LanguageRouteEditor: View {
                     .foregroundStyle(.orange)
                 Link("Open macOS voice downloads", destination: URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension")!)
             }
+            if !isDefault {
+                Picker("Speed", selection: Binding(
+                    get: { route.playbackSpeed },
+                    set: { route.playbackSpeed = $0 },
+                )) {
+                    Text("Same as Language Flow").tag(Float?.none)
+                    ForEach(Self.speedSteps, id: \.self) { speed in
+                        Text("\(String(format: "%g×", speed))").tag(Float?.some(speed))
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
     }
+
+    static let speedSteps: [Float] = (2...16).map { Float($0) / 4 }
 }
 
 private struct CollapsibleLanguageRouteEditor: View {

@@ -43,6 +43,7 @@ struct FlowSettings: Codable, Equatable {
         var azureSpeechRate: Float
         var googleVoiceName: String?
         var googleSpeechRate: Float
+        var playbackSpeed: Float?
 
         init(
             id: UUID = UUID(),
@@ -53,6 +54,7 @@ struct FlowSettings: Codable, Equatable {
             azureSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate,
             googleVoiceName: String? = nil,
             googleSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate,
+            playbackSpeed: Float? = nil,
         ) {
             self.id = id
             self.languageTag = languageTag
@@ -62,11 +64,13 @@ struct FlowSettings: Codable, Equatable {
             self.azureSpeechRate = azureSpeechRate
             self.googleVoiceName = googleVoiceName
             self.googleSpeechRate = googleSpeechRate
+            self.playbackSpeed = playbackSpeed
         }
 
         private enum CodingKeys: String, CodingKey {
             case id, languageTag, systemVoiceIdentifier, systemSpeechRate
             case azureVoiceName, azureSpeechRate, googleVoiceName, googleSpeechRate
+            case playbackSpeed
         }
 
         init(from decoder: Decoder) throws {
@@ -80,6 +84,15 @@ struct FlowSettings: Codable, Equatable {
             googleVoiceName = try values.decodeIfPresent(String.self, forKey: .googleVoiceName)
             googleSpeechRate = try values.decodeIfPresent(Float.self, forKey: .googleSpeechRate)
                 ?? AVSpeechUtteranceDefaultSpeechRate
+            if let speed = try values.decodeIfPresent(Float.self, forKey: .playbackSpeed) {
+                playbackSpeed = min(max(speed, 0.5), 4)
+            } else {
+                playbackSpeed = nil
+            }
+        }
+
+        func effectivePlaybackSpeed(default global: Float) -> Float {
+            min(max(playbackSpeed ?? global, 0.5), 4)
         }
 
         var displayName: String {
