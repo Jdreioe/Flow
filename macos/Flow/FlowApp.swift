@@ -28,9 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         popup = PlaybackPopupController(model: model)
         settingsWindow = SettingsWindowController(model: model)
-        Task { [weak self] in
-            await self?.checkForUpdate()
-        }
         model.onPopupVisibilityChanged = { [weak self] isVisible in
             guard let self else { return }
             if isVisible {
@@ -63,28 +60,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func checkForUpdate() async {
-        guard let tag = await UpdateChecker.check() else { return }
-        let alert = NSAlert()
-        alert.messageText = "Flow \(tag) is available"
-        alert.informativeText = "You are running Flow \(UpdateChecker.currentVersion)."
-        alert.addButton(withTitle: "View Release")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(UpdateChecker.releasesPage)
-        }
-    }
 }
 
 enum UpdateChecker {
-    static let releasesPage = URL(string: "https://github.com/jdreioe/Flow/releases/latest")!
     private static let apiURL = URL(string: "https://api.github.com/repos/jdreioe/Flow/releases/latest")!
 
-    private struct Release: Decodable {
+    struct Release: Decodable {
         let tagName: String
+        let assets: [Asset]
 
         private enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
+            case assets
+        }
+
+        var downloadURL: URL? {
+            assets.first { $0.name == "Flow-\(tagName).zip" }?.browserDownloadURL
+        }
+    }
+
+    struct Asset: Decodable {
+        let name: String
+        let browserDownloadURL: URL
+
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case browserDownloadURL = "browser_download_url"
         }
     }
 
@@ -92,16 +93,17 @@ enum UpdateChecker {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
 
-    static func check() async -> String? {
+    static func availableRelease() async throws -> Release? {
         var request = URLRequest(url: apiURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Flow", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              http.statusCode == 200,
-              let release = try? JSONDecoder().decode(Release.self, from: data) else { return nil }
-        return isNewer(release.tagName, than: currentVersion) ? release.tagName : nil
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw UpdateError.couldNotCheck
+        }
+        let release = try JSONDecoder().decode(Release.self, from: data)
+        return isNewer(release.tagName, than: currentVersion) ? release : nil
     }
 
     static func isNewer(_ candidate: String, than current: String) -> Bool {
@@ -118,6 +120,192 @@ enum UpdateChecker {
             if candidatePart != currentPart { return candidatePart > currentPart }
         }
         return false
+    }
+}
+
+@MainActor
+final class UpdateManager: ObservableObject {
+    enum State {
+        case idle
+        case checking
+        case current
+        case available(UpdateChecker.Release)
+        case downloading(UpdateChecker.Release)
+        case ready(UpdateChecker.Release, URL)
+        case installing
+        case failed(String)
+    }
+
+    @Published private(set) var state: State = .idle
+
+    func checkForUpdate() async {
+        state = .checking
+        do {
+            state = try await UpdateChecker.availableRelease().map(State.available) ?? .current
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    func download(_ release: UpdateChecker.Release) async {
+        state = .downloading(release)
+        do {
+            state = .ready(release, try await UpdateInstaller.download(release))
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    func install(_ appURL: URL) {
+        do {
+            try UpdateInstaller.replaceCurrentApp(with: appURL)
+            state = .installing
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+}
+
+private enum UpdateInstaller {
+    private static let bundleIdentifier = "com.hojmoseit.flow"
+    private static let teamIdentifier = "9BB3E6JDX4"
+
+    static func download(_ release: UpdateChecker.Release) async throws -> URL {
+        guard let downloadURL = release.downloadURL else {
+            throw UpdateError.downloadMissing(release.tagName)
+        }
+
+        var request = URLRequest(url: downloadURL)
+        request.setValue("Flow", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 60
+        let (temporaryZip, response) = try await URLSession.shared.download(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw UpdateError.downloadFailed
+        }
+
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("Flow-update-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let zipURL = directory.appendingPathComponent("Flow.zip")
+        try fileManager.moveItem(at: temporaryZip, to: zipURL)
+        _ = try await run("/usr/bin/ditto", ["-x", "-k", zipURL.path, directory.path])
+
+        let appURL = directory.appendingPathComponent("Flow.app", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: appURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw UpdateError.invalidDownload
+        }
+        try await verify(appURL)
+        return appURL
+    }
+
+    static func replaceCurrentApp(with newAppURL: URL) throws {
+        let fileManager = FileManager.default
+        let currentAppURL = Bundle.main.bundleURL.resolvingSymlinksInPath()
+        let parentDirectory = currentAppURL.deletingLastPathComponent()
+        guard currentAppURL.pathExtension == "app",
+              fileManager.isWritableFile(atPath: parentDirectory.path) else {
+            throw UpdateError.cannotReplaceInstalledApp
+        }
+
+        let helperURL = newAppURL.deletingLastPathComponent().appendingPathComponent("install-flow-update.sh")
+        let script = """
+        #!/bin/sh
+        set -eu
+        parent_pid="$1"
+        new_app="$2"
+        installed_app="$3"
+        backup_app="${installed_app}.previous"
+
+        while kill -0 "$parent_pid" 2>/dev/null; do
+            sleep 1
+        done
+
+        rm -rf "$backup_app"
+        mv "$installed_app" "$backup_app"
+        if mv "$new_app" "$installed_app"; then
+            open "$installed_app"
+            rm -rf "$backup_app"
+        else
+            mv "$backup_app" "$installed_app"
+            exit 1
+        fi
+        rm -f "$0"
+        """
+        try script.write(to: helperURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helperURL.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [helperURL.path, String(ProcessInfo.processInfo.processIdentifier), newAppURL.path, currentAppURL.path]
+        try process.run()
+        NSApplication.shared.terminate(nil)
+    }
+
+    private static func verify(_ appURL: URL) async throws {
+        let infoURL = appURL.appendingPathComponent("Contents/Info.plist")
+        let values = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: infoURL),
+            format: nil,
+        ) as? [String: Any]
+        guard values?["CFBundleIdentifier"] as? String == bundleIdentifier else {
+            throw UpdateError.invalidDownload
+        }
+        _ = try await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", appURL.path])
+        let signature = try await run("/usr/bin/codesign", ["-dv", "--verbose=4", appURL.path])
+        guard String(decoding: signature.standardError, as: UTF8.self).contains("TeamIdentifier=\(teamIdentifier)") else {
+            throw UpdateError.invalidDownload
+        }
+    }
+
+    private static func run(_ executable: String, _ arguments: [String]) async throws -> (standardOutput: Data, standardError: Data) {
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        try process.run()
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+                continuation.resume()
+            }
+        }
+        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        let error = standardError.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            throw UpdateError.commandFailed(String(decoding: error, as: UTF8.self))
+        }
+        return (output, error)
+    }
+}
+
+private enum UpdateError: LocalizedError {
+    case couldNotCheck
+    case downloadMissing(String)
+    case downloadFailed
+    case invalidDownload
+    case cannotReplaceInstalledApp
+    case commandFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .couldNotCheck:
+            "Could not check for updates. Check your internet connection and try again."
+        case .downloadMissing(let tag):
+            "The \(tag) release does not include the Flow ZIP file."
+        case .downloadFailed:
+            "Could not download the update. Try again."
+        case .invalidDownload:
+            "The downloaded update is not a valid Flow app."
+        case .cannotReplaceInstalledApp:
+            "Flow cannot replace this copy. Move it to a folder you can write to, then try again."
+        case .commandFailed:
+            "Flow could not verify the downloaded update."
+        }
     }
 }
 
@@ -1766,6 +1954,7 @@ private struct LanguageCheckView: View {
 private struct FlowSettingsView: View {
     @ObservedObject var model: FlowModel
     @State private var languageToAdd = "da-DK"
+    @StateObject private var updater = UpdateManager()
 
     private var voices: [SystemSpeechEngine.Voice] { SystemSpeechEngine.voices }
 
@@ -1889,9 +2078,62 @@ private struct FlowSettingsView: View {
                 Text("Flow keeps selected text only while the playback popup is visible. System language detection and voices are on-device. A cloud provider receives text only when that provider is selected.")
                     .font(.caption)
             }
+            Section("Updates") {
+                UpdateSettingsView(updater: updater)
+            }
         }
         .formStyle(.grouped)
         .padding()
+    }
+}
+
+private struct UpdateSettingsView: View {
+    @ObservedObject var updater: UpdateManager
+
+    var body: some View {
+        Text("Flow \(UpdateChecker.currentVersion)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        switch updater.state {
+        case .idle:
+            Button("Check for updates") {
+                Task { await updater.checkForUpdate() }
+            }
+        case .checking:
+            ProgressView("Checking for updates…")
+        case .current:
+            Text("You're up to date.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Check again") {
+                Task { await updater.checkForUpdate() }
+            }
+        case .available(let release):
+            Text("Flow \(release.tagName) is available.")
+                .font(.caption)
+            Button("Download \(release.tagName)") {
+                Task { await updater.download(release) }
+            }
+        case .downloading(let release):
+            ProgressView("Downloading \(release.tagName)…")
+        case .ready(let release, let appURL):
+            Text("Flow \(release.tagName) is ready to install.")
+                .font(.caption)
+            Button("Update and relaunch") {
+                updater.install(appURL)
+            }
+            .buttonStyle(.borderedProminent)
+        case .installing:
+            ProgressView("Installing update…")
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+            Button("Try again") {
+                Task { await updater.checkForUpdate() }
+            }
+        }
     }
 }
 

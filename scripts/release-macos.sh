@@ -31,6 +31,15 @@ if [ -z "$VERSION" ]; then
 fi
 [ -n "$VERSION" ] || { echo "error: could not determine version; pass one: $0 1.2.0" >&2; exit 1; }
 case "$VERSION" in
+    v*) VERSION="${VERSION#v}" ;;
+esac
+case "$VERSION" in
+    *[!0-9.]*|.*|*.)
+        echo "error: version must contain only digits and dots: $VERSION" >&2
+        exit 1
+        ;;
+esac
+case "$VERSION" in
     v*) TAG="$VERSION" ;;
     *) TAG="v$VERSION" ;;
 esac
@@ -42,6 +51,10 @@ if git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
     echo "error: $TAG already exists" >&2
     exit 1
 fi
+
+echo "Updating Xcode marketing version to $VERSION..."
+sed -i '' -E "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = $VERSION;/g" \
+    "$PROJECT_ROOT/macos/Flow.xcodeproj/project.pbxproj"
 
 rm -rf "$BUILD_DIR"
 xcodebuild -project "$PROJECT" \
