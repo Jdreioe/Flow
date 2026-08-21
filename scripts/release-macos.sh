@@ -43,21 +43,20 @@ esac
 
 echo "Releasing $TAG from $REPO"
 
-PROJECT_VERSION="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
-    | awk '/CURRENT_PROJECT_VERSION/ { print $3; exit }')"
-[ -n "$PROJECT_VERSION" ] || { echo "error: CURRENT_PROJECT_VERSION is not set" >&2; exit 1; }
-
-if [ "$VERSION" != "$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
-    | awk '/MARKETING_VERSION/ { print $3; exit }')" ]; then
-    echo "error: MARKETING_VERSION must match $VERSION before releasing" >&2
-    exit 1
-fi
-
 if git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
     || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "error: $TAG already exists" >&2
     exit 1
 fi
+
+PROJECT_FILE="$PROJECT_ROOT/macos/Flow.xcodeproj/project.pbxproj"
+MARKETING_VERSION_COUNT="$(awk '/MARKETING_VERSION = [0-9][0-9.]*/ { count++ } END { print count + 0 }' "$PROJECT_FILE")"
+[ "$MARKETING_VERSION_COUNT" -eq 2 ] || {
+    echo "error: expected two MARKETING_VERSION settings, found $MARKETING_VERSION_COUNT" >&2
+    exit 1
+}
+echo "Updating Xcode marketing version to $VERSION..."
+sed -i '' -E "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = $VERSION;/g" "$PROJECT_FILE"
 
 rm -rf "$BUILD_DIR"
 xcodebuild -project "$PROJECT" \
