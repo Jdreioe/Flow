@@ -20,5 +20,9 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/Jdreioe/Flow/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>PjtGGhBk8wyL+6cPRMvqIT4jbrHGBgQH2d+38Pe/+J8=</string>
 </dict>
 </plist>

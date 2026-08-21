@@ -14,6 +14,7 @@ struct FlowMenu: View {
         }
         Divider()
         Button("Settings…") { model.openSettings() }
+        Button("Check for Updates…") { model.checkForUpdates() }
         Button("Quit Flow") { NSApplication.shared.terminate(nil) }
     }
 }

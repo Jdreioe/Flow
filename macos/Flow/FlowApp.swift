@@ -19,6 +19,7 @@ struct FlowApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = FlowModel()
+    private let updater = UpdateManager()
     private var hotKey: GlobalHotKey?
     private var popup: PlaybackPopupController?
     private var settingsWindow: SettingsWindowController?
@@ -39,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onSettingsRequested = { [weak self] in
             self?.settingsWindow?.show()
+        }
+        model.onUpdatesRequested = { [weak self] in
+            self?.updater.checkForUpdates()
         }
         installHotKey(model.settings.hotKey)
     }
@@ -96,6 +100,7 @@ final class FlowModel: ObservableObject {
     var onPopupVisibilityChanged: ((Bool) -> Void)?
     var onHotKeyChanged: ((HotKeyPreset) -> Void)?
     var onSettingsRequested: (() -> Void)?
+    var onUpdatesRequested: (() -> Void)?
 
     private let systemSpeech = SystemSpeechEngine()
     private let azureSpeech = AzureSpeechEngine()
@@ -148,6 +153,10 @@ final class FlowModel: ObservableObject {
 
     func openSettings() {
         onSettingsRequested?()
+    }
+
+    func checkForUpdates() {
+        onUpdatesRequested?()
     }
 
     func playTestVoice() {
