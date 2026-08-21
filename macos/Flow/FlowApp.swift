@@ -79,6 +79,8 @@ final class FlowModel: ObservableObject {
     @Published private(set) var state: PlaybackState = .hidden
     @Published private(set) var selectedText = ""
     @Published private(set) var currentWordRange: Range<Int>?
+    @Published private(set) var currentReadingOffset: Double?
+    @Published private(set) var playbackProgress: Double?
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var azureEndpoint: String?
     @Published private(set) var azureVoices: [AzureVoiceCatalog.Voice] = []
@@ -127,9 +129,15 @@ final class FlowModel: ObservableObject {
         systemSpeech.onWordRange = { [weak self] range in
             Task { @MainActor in self?.currentWordRange = range }
         }
+        systemSpeech.onPlaybackProgress = { [weak self] fraction in
+            Task { @MainActor in self?.playbackProgress = fraction }
+        }
         azureSpeech.onFinished = finished
         azureSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
+        }
+        azureSpeech.onPlaybackProgress = { [weak self] fraction in
+            Task { @MainActor in self?.playbackProgress = fraction }
         }
         googleSpeech.onFinished = finished
         googleSpeech.onFailure = { [weak self] message in
@@ -137,6 +145,12 @@ final class FlowModel: ObservableObject {
         }
         googleSpeech.onWordRange = { [weak self] range in
             Task { @MainActor in self?.currentWordRange = range }
+        }
+        googleSpeech.onReadingOffset = { [weak self] offset in
+            Task { @MainActor in self?.currentReadingOffset = offset }
+        }
+        googleSpeech.onPlaybackProgress = { [weak self] fraction in
+            Task { @MainActor in self?.playbackProgress = fraction }
         }
         saveSettings()
         refreshAzureVoices()
@@ -175,6 +189,8 @@ final class FlowModel: ObservableObject {
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
         currentWordRange = nil
+        currentReadingOffset = nil
+        playbackProgress = nil
         activeSpeech = speech
         languagePlan = plan
         state = .preparing
@@ -196,10 +212,20 @@ final class FlowModel: ObservableObject {
         }
     }
 
+    func seek(to fraction: Double) {
+        activeSpeech?.seek(to: fraction)
+    }
+
+    var playbackSeekSupported: Bool {
+        activeSpeech?.supportsSeek ?? false
+    }
+
     func stop() {
         dismissTask?.cancel()
         activeSpeech?.stop()
         currentWordRange = nil
+        currentReadingOffset = nil
+        playbackProgress = nil
         selectedText = ""
         languagePlan = nil
         state = .hidden
@@ -340,9 +366,11 @@ final class FlowModel: ObservableObject {
         manualRouteNeeded = false
         activeSpeech = speech
         selectedText = settings.wordHighlightingEnabled
-            ? plan.sentences.map(\.text).joined(separator: " ")
+            ? LanguageFlow.playbackText(for: plan, sourceText: text)
             : text
         currentWordRange = nil
+        currentReadingOffset = nil
+        playbackProgress = nil
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
@@ -353,6 +381,8 @@ final class FlowModel: ObservableObject {
     private func showMessage(_ message: String) {
         selectedText = ""
         currentWordRange = nil
+        currentReadingOffset = nil
+        playbackProgress = nil
         languagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
@@ -363,6 +393,7 @@ final class FlowModel: ObservableObject {
         guard state == .playing || state == .paused else { return }
         state = .finished
         currentWordRange = nil
+        currentReadingOffset = nil
         dismissAfterDelay()
     }
 

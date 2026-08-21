@@ -58,7 +58,10 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
+    var onPlaybackProgress: ((Double?) -> Void)?
+    let supportsSeek = true
     private var player: AVAudioPlayer?
+    private var progressTimer: Timer?
     private var synthesisTask: Task<Void, Never>?
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
@@ -81,11 +84,20 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
 
     func pause() { player?.pause() }
     func resume() { player?.play() }
+    func seek(to fraction: Double) {
+        guard let player, player.duration > 0 else { return }
+        let clamped = min(max(fraction, 0), 1)
+        player.currentTime = clamped * player.duration
+        onPlaybackProgress?(clamped)
+    }
     func stop() {
         synthesisTask?.cancel()
         synthesisTask = nil
+        progressTimer?.invalidate()
+        progressTimer = nil
         player?.stop()
         player = nil
+        onPlaybackProgress?(nil)
     }
 
     private func play(_ data: Data) {
@@ -93,10 +105,21 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
             let player = try AVAudioPlayer(data: data)
             player.delegate = self
             self.player = player
+            startProgressTimer()
             guard player.play() else { throw CocoaError(.fileReadCorruptFile) }
         } catch {
             onFailure?("Azure returned audio that Flow could not play.")
         }
+    }
+
+    private func startProgressTimer() {
+        progressTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, let player = self.player, player.duration > 0 else { return }
+            self.onPlaybackProgress?(min(player.currentTime / player.duration, 1))
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        progressTimer = timer
     }
 
     private static func synthesize(plan: LanguageFlow.Plan, settings: FlowSettings, credentials: AzureSpeechCredentials) async throws -> Data {
@@ -139,6 +162,14 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        if flag { onFinished?() } else { onFailure?("Azure playback ended unexpectedly.") }
+        progressTimer?.invalidate()
+        progressTimer = nil
+        if flag {
+            onPlaybackProgress?(1)
+            onFinished?()
+        } else {
+            onPlaybackProgress?(nil)
+            onFailure?("Azure playback ended unexpectedly.")
+        }
     }
 }

@@ -20,6 +20,7 @@ ApplicationWindow {
     property var wordTimings: []
     property int currentWordStart: -1
     property int currentWordEnd: -1
+    property int pendingSeekMs: -1
 
     function escapedHtml(value) {
         return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -29,9 +30,15 @@ ApplicationWindow {
         const text = backend.playback_text
         if (currentWordStart < 0 || currentWordEnd > text.length)
             return escapedHtml(text)
-        return "<span style='color:#888'>" + escapedHtml(text.slice(0, currentWordStart))
+        const nominalStart = Math.max(0, currentWordStart - 24)
+        // Once playback crosses a paragraph break, drop the completed paragraph
+        // so the active word remains in the forward-looking part of the popup.
+        const paragraphStart = text.lastIndexOf("\n", currentWordStart - 1) + 1
+        const visibleStart = Math.max(nominalStart, paragraphStart)
+        const visibleEnd = Math.min(text.length, currentWordEnd + 220)
+        return "<span style='color:#888'>" + escapedHtml(text.slice(visibleStart, currentWordStart))
             + "</span><b>" + escapedHtml(text.slice(currentWordStart, currentWordEnd))
-            + "</b>" + escapedHtml(text.slice(currentWordEnd))
+            + "</b>" + escapedHtml(text.slice(currentWordEnd, visibleEnd))
     }
 
     function cloudPlayer() {
@@ -45,6 +52,7 @@ ApplicationWindow {
             player.source = ""
         }
         cloudActive = false
+        root.pendingSeekMs = -1
         cloudPlayerLoader.active = false
     }
 
@@ -135,7 +143,7 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onPlay_cloud(fileUrl, wordTimingsJson) {
+        function onPlay_cloud(fileUrl, wordTimingsJson, offsetMs) {
             cloudPlayerLoader.active = true
             let player = cloudPlayer()
             if (!player) {
@@ -146,8 +154,16 @@ ApplicationWindow {
             root.wordTimings = JSON.parse(wordTimingsJson)
             root.currentWordStart = -1
             root.currentWordEnd = -1
+            root.pendingSeekMs = offsetMs > 0 ? offsetMs : -1
             cloudActive = true
-            player.play()
+            if (backend.state !== "paused")
+                player.play()
+        }
+
+        function onSeek_audio(offsetMs) {
+            let player = cloudPlayer()
+            if (cloudActive && player)
+                player.seek(offsetMs)
         }
 
         function onPause_playback() {
@@ -188,7 +204,13 @@ ApplicationWindow {
                 audioOutput: cloudOutput
 
                 onMediaStatusChanged: {
-                    if (root.cloudActive && mediaStatus === MediaPlayer.EndOfMedia) {
+                    if (root.cloudActive && mediaStatus === MediaPlayer.LoadedMedia) {
+                        backend.report_duration(duration)
+                        if (root.pendingSeekMs >= 0) {
+                            player.seek(root.pendingSeekMs)
+                            root.pendingSeekMs = -1
+                        }
+                    } else if (root.cloudActive && mediaStatus === MediaPlayer.EndOfMedia) {
                         root.stopCloudPlayback()
                         backend.playback_finished()
                     } else if (root.cloudActive && mediaStatus === MediaPlayer.InvalidMedia) {
@@ -214,6 +236,7 @@ ApplicationWindow {
             const player = root.cloudPlayer()
             if (!player) return
             const seconds = player.position / 1000
+            backend.report_position(player.position)
             let active = null
             for (let index = 0; index < root.wordTimings.length; ++index) {
                 if (root.wordTimings[index].timeSeconds <= seconds) active = root.wordTimings[index]
@@ -288,14 +311,14 @@ ApplicationWindow {
         id: popup
         visible: backend.popup_visible
         width: 520
-        height: 210
+        height: 250
         minimumWidth: 420
         color: "transparent"
         title: "Flow playback"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
             | Qt.WindowDoesNotAcceptFocus
         x: Math.round((Screen.width - width) / 2)
-        y: Math.round(Screen.height * 0.12)
+        y: Math.round((Screen.height - height) / 2)
 
         property bool showLanguages: false
 
@@ -369,6 +392,27 @@ ApplicationWindow {
                     textFormat: Text.RichText
                     text: root.highlightedText()
                     Accessible.name: "Selected text being read"
+                }
+
+                Slider {
+                    id: playbackSlider
+                    visible: (backend.state === "playing" || backend.state === "paused")
+                        && backend.playback_seek_supported
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: 0
+                    Binding on value {
+                        when: !playbackSlider.pressed
+                        value: backend.playback_progress
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                    onPressedChanged: {
+                        if (!pressed)
+                            backend.seek_to_fraction(playbackSlider.value)
+                    }
+                    Accessible.name: qsTr("Playback position")
+                    Accessible.value: Math.round(playbackSlider.value * 100) + "%"
                 }
 
                 ComboBox {

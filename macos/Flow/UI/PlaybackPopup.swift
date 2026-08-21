@@ -6,7 +6,7 @@ final class PlaybackPopupController {
 
     init(model: FlowModel) {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 210),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 250),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false,
@@ -22,7 +22,11 @@ final class PlaybackPopupController {
 
     func show() {
         let cursor = NSEvent.mouseLocation
-        panel.setFrameOrigin(NSPoint(x: cursor.x - 230, y: cursor.y - 240))
+        let screen = NSScreen.screens.first { $0.frame.contains(cursor) } ?? NSScreen.main
+        guard let visibleFrame = screen?.visibleFrame else { return }
+        panel.setFrameOrigin(NSPoint(
+            x: visibleFrame.midX - panel.frame.width / 2,
+            y: visibleFrame.midY - panel.frame.height / 2))
         panel.orderFrontRegardless()
     }
 
@@ -34,6 +38,7 @@ final class PlaybackPopupController {
 struct PlaybackPopupView: View {
     @ObservedObject var model: FlowModel
     @State private var showsLanguages = false
+    @State private var scrubPosition: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -109,6 +114,23 @@ struct PlaybackPopupView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if showsSlider, let progress = model.playbackProgress {
+                Slider(
+                    value: Binding(
+                        get: { scrubPosition ?? progress },
+                        set: { scrubPosition = $0 },
+                    ),
+                    onEditingChanged: { editing in
+                        guard !editing else { return }
+                        defer { scrubPosition = nil }
+                        guard let scrubPosition else { return }
+                        model.seek(to: scrubPosition)
+                    },
+                )
+                .disabled(!model.playbackSeekSupported)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue("\(Int(((scrubPosition ?? progress) * 100).rounded())) percent")
+            }
             if model.state == .playing || model.state == .paused {
                 Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
                     .buttonStyle(.borderedProminent)
@@ -136,6 +158,13 @@ struct PlaybackPopupView: View {
         model.state == .awaitingRoute && (model.overrideNeedsRoute || model.manualRouteNeeded)
     }
 
+    private var showsSlider: Bool {
+        switch model.state {
+        case .playing, .paused: model.playbackProgress != nil
+        default: false
+        }
+    }
+
     private func languageName(_ tag: String) -> String {
         Locale.current.localizedString(forIdentifier: tag) ?? tag
     }
@@ -158,11 +187,27 @@ struct PlaybackPopupView: View {
               range.upperBound <= model.selectedText.utf16.count else {
             return Text(model.selectedText)
         }
+        let readingOffset = Int(model.currentReadingOffset ?? Double(range.lowerBound))
+        // Keep the spoken word just before the visual midpoint so the preview
+        // advances early enough to show the words that are about to be read.
+        let nominalWindowStart = max(0, readingOffset - 24)
+        let windowEnd = min(model.selectedText.utf16.count, range.upperBound + 220)
         let start = String.Index(utf16Offset: range.lowerBound, in: model.selectedText)
         let end = String.Index(utf16Offset: range.upperBound, in: model.selectedText)
-        let prefix = String(model.selectedText[..<start])
+        let readingIndex = String.Index(utf16Offset: readingOffset, in: model.selectedText)
+        // A paragraph break consumes vertical space, not horizontal space. Once
+        // crossed, drop the completed paragraph so the active word stays in the
+        // same forward-looking position.
+        let paragraphStart = model.selectedText[..<readingIndex]
+            .lastIndex(of: "\n")
+            .map { model.selectedText.index(after: $0).utf16Offset(in: model.selectedText) }
+            ?? 0
+        let windowStart = max(nominalWindowStart, paragraphStart)
+        let visibleStart = String.Index(utf16Offset: windowStart, in: model.selectedText)
+        let visibleEnd = String.Index(utf16Offset: windowEnd, in: model.selectedText)
+        let prefix = String(model.selectedText[visibleStart..<start])
         let word = String(model.selectedText[start..<end])
-        let suffix = String(model.selectedText[end...])
+        let suffix = String(model.selectedText[end..<visibleEnd])
         return Text(prefix).foregroundStyle(.secondary)
             + Text(word).foregroundStyle(.tint).bold()
             + Text(suffix).foregroundStyle(.primary)
