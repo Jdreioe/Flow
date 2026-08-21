@@ -1,12 +1,18 @@
 import AppKit
 import SwiftUI
 
+final class PlaybackPopupPanel: NSPanel {
+    // SwiftUI's Slider only tracks inside a key window; becoming key does not
+    // activate the app because of the nonactivating panel style mask.
+    override var canBecomeKey: Bool { true }
+}
+
 final class PlaybackPopupController {
     private let panel: NSPanel
 
     init(model: FlowModel) {
-        panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 210),
+        panel = PlaybackPopupPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 250),
             styleMask: [.nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false,
@@ -16,13 +22,16 @@ final class PlaybackPopupController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
         panel.contentView = NSHostingView(rootView: PlaybackPopupView(model: model))
     }
 
     func show() {
         let cursor = NSEvent.mouseLocation
-        panel.setFrameOrigin(NSPoint(x: cursor.x - 230, y: cursor.y - 240))
+        let screen = NSScreen.screens.first { $0.frame.contains(cursor) } ?? NSScreen.main
+        guard let visibleFrame = screen?.visibleFrame else { return }
+        panel.setFrameOrigin(NSPoint(
+            x: visibleFrame.midX - panel.frame.width / 2,
+            y: visibleFrame.midY - panel.frame.height / 2))
         panel.orderFrontRegardless()
     }
 
@@ -34,6 +43,7 @@ final class PlaybackPopupController {
 struct PlaybackPopupView: View {
     @ObservedObject var model: FlowModel
     @State private var showsLanguages = false
+    @State private var pendingSpeed: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -109,6 +119,41 @@ struct PlaybackPopupView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if showsSpeedControl {
+                HStack(spacing: 10) {
+                    Image(systemName: "gauge.with.needle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Slider(
+                        value: Binding(
+                            get: { pendingSpeed ?? Double(model.playbackSpeed) },
+                            set: { pendingSpeed = $0 },
+                        ),
+                        in: 0.5...4,
+                        step: 0.25,
+                    ) {
+                        EmptyView()
+                    } minimumValueLabel: {
+                        Text("0.5×")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } maximumValueLabel: {
+                        Text("4×")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } onEditingChanged: { editing in
+                        guard !editing else { return }
+                        defer { pendingSpeed = nil }
+                        guard let pendingSpeed else { return }
+                        model.setPlaybackSpeed(Float(pendingSpeed))
+                    }
+                    .accessibilityLabel("Playback speed")
+                    .accessibilityValue("\(speedLabel) times normal speed")
+                    Text(speedLabel)
+                        .font(.callout.monospacedDigit())
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
+            }
             if model.state == .playing || model.state == .paused {
                 Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
                     .buttonStyle(.borderedProminent)
@@ -136,6 +181,17 @@ struct PlaybackPopupView: View {
         model.state == .awaitingRoute && (model.overrideNeedsRoute || model.manualRouteNeeded)
     }
 
+    private var showsSpeedControl: Bool {
+        switch model.state {
+        case .preparing, .playing, .paused, .awaitingRoute: true
+        default: false
+        }
+    }
+
+    private var speedLabel: String {
+        String(format: "%g×", pendingSpeed ?? Double(model.playbackSpeed))
+    }
+
     private func languageName(_ tag: String) -> String {
         Locale.current.localizedString(forIdentifier: tag) ?? tag
     }
@@ -158,11 +214,29 @@ struct PlaybackPopupView: View {
               range.upperBound <= model.selectedText.utf16.count else {
             return Text(model.selectedText)
         }
+        let readingOffset = min(
+            max(0, Int(model.currentReadingOffset ?? Double(range.lowerBound))),
+            model.selectedText.utf16.count)
+        // Keep the spoken word just before the visual midpoint so the preview
+        // advances early enough to show the words that are about to be read.
+        let nominalWindowStart = max(0, readingOffset - 24)
+        let windowEnd = min(model.selectedText.utf16.count, range.upperBound + 220)
         let start = String.Index(utf16Offset: range.lowerBound, in: model.selectedText)
         let end = String.Index(utf16Offset: range.upperBound, in: model.selectedText)
-        let prefix = String(model.selectedText[..<start])
+        let readingIndex = String.Index(utf16Offset: readingOffset, in: model.selectedText)
+        // A paragraph break consumes vertical space, not horizontal space. Once
+        // crossed, drop the completed paragraph so the active word stays in the
+        // same forward-looking position.
+        let paragraphStart = model.selectedText[..<readingIndex]
+            .lastIndex(of: "\n")
+            .map { model.selectedText.index(after: $0).utf16Offset(in: model.selectedText) }
+            ?? 0
+        let windowStart = min(max(nominalWindowStart, paragraphStart), range.lowerBound)
+        let visibleStart = String.Index(utf16Offset: windowStart, in: model.selectedText)
+        let visibleEnd = String.Index(utf16Offset: windowEnd, in: model.selectedText)
+        let prefix = String(model.selectedText[visibleStart..<start])
         let word = String(model.selectedText[start..<end])
-        let suffix = String(model.selectedText[end...])
+        let suffix = String(model.selectedText[end..<visibleEnd])
         return Text(prefix).foregroundStyle(.secondary)
             + Text(word).foregroundStyle(.tint).bold()
             + Text(suffix).foregroundStyle(.primary)

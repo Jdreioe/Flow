@@ -3,10 +3,7 @@ use reqwest::{Url, blocking::Client};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use flow_core::{
-    language::Plan,
-    model::Settings,
-};
+use flow_core::{language::Plan, model::Settings};
 
 const KEYRING_SERVICE: &str = "io.github.jdreioe.flow.azure-speech";
 const KEYRING_ACCOUNT: &str = "byok";

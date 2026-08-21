@@ -56,15 +56,21 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
+    var onReadingOffset: ((Double?) -> Void)?
     private var player: AVAudioPlayer?
-    private var audioQueue: [AudioSegment] = []
+    private var segments: [PlaybackSegment] = []
+    private var currentIndex = -1
     private var synthesisTask: Task<Void, Never>?
-    private var wordTimer: Timer?
+    private var playbackTimer: Timer?
     private var activeWordTimings: [WordTiming] = []
     private var activeWordIndex: Int?
+    private var activeReadingOffset: Int?
+    private var speedMultiplier: Float = 1
+    private var activeSegmentSpeed: Float?
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         stop()
+        speedMultiplier = min(max(settings.playbackSpeed, 0.5), 4)
         guard let apiKey = GoogleCredentialsStore.load() else {
             onFailure?("Set up Google Cloud Text-to-Speech before choosing Google voice.")
             return
@@ -85,47 +91,85 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
 
     func pause() { player?.pause() }
     func resume() { player?.play() }
+    func setSpeed(_ multiplier: Float) {
+        speedMultiplier = min(max(multiplier, 0.5), 4)
+        // Languages with their own speed keep it; the rest follow the global.
+        guard let player, activeSegmentSpeed == nil else { return }
+        player.enableRate = true
+        player.rate = speedMultiplier
+    }
     func stop() {
         synthesisTask?.cancel()
         synthesisTask = nil
         player?.stop()
         player = nil
-        audioQueue = []
-        wordTimer?.invalidate()
-        wordTimer = nil
+        segments = []
+        currentIndex = -1
+        playbackTimer?.invalidate()
+        playbackTimer = nil
         activeWordTimings = []
         activeWordIndex = nil
+        activeReadingOffset = nil
+        activeSegmentSpeed = nil
         onWordRange?(nil)
+        onReadingOffset?(nil)
+    }
+
+    private struct PlaybackSegment {
+        let audio: AudioSegment
+        let duration: TimeInterval
     }
 
     private func play(_ audio: [AudioSegment]) {
-        audioQueue = audio
-        playNextSegment()
+        var measured: [PlaybackSegment] = []
+        for segment in audio {
+            guard let probe = try? AVAudioPlayer(data: segment.data),
+                  probe.duration.isFinite, probe.duration > 0 else {
+                onFailure?("Google Cloud returned audio that Flow could not play.")
+                return
+            }
+            measured.append(.init(audio: segment, duration: probe.duration))
+        }
+        segments = measured
+        currentIndex = -1
+        playSegment(at: 0)
     }
 
-    private func playNextSegment() {
-        guard !audioQueue.isEmpty else {
+    private func playSegment(at index: Int, offset: TimeInterval = 0, autoplay: Bool = true) {
+        guard index < segments.count else {
             player = nil
             onFinished?()
             return
         }
         do {
-            let segment = audioQueue.removeFirst()
-            let player = try AVAudioPlayer(data: segment.data)
+            let segment = segments[index]
+            let player = try AVAudioPlayer(data: segment.audio.data)
             player.delegate = self
+            player.currentTime = min(max(offset, 0), segment.duration)
+            player.enableRate = true
+            activeSegmentSpeed = segment.audio.speedOverride
+            player.rate = segment.audio.speedOverride ?? speedMultiplier
             self.player = player
-            activeWordTimings = segment.wordTimings
+            currentIndex = index
+            activeWordTimings = segment.audio.wordTimings
             activeWordIndex = nil
+            activeReadingOffset = nil
+            restartTimer()
+            guard !autoplay || player.play() else { throw CocoaError(.fileReadCorruptFile) }
             updateWordHighlight()
-            wordTimer?.invalidate()
-            wordTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
-                self?.updateWordHighlight()
-            }
-            guard player.play() else { throw CocoaError(.fileReadCorruptFile) }
         } catch {
-            audioQueue = []
+            stop()
             onFailure?("Google Cloud returned audio that Flow could not play.")
         }
+    }
+
+    private func restartTimer() {
+        playbackTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.updateWordHighlight()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackTimer = timer
     }
 
     private struct SynthesisRequest: Encodable {
@@ -140,7 +184,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             let name: String?
         }
         struct AudioConfig: Encodable {
-            let audioEncoding = "MP3"
+            let audioEncoding: String
             let speakingRate: Float?
         }
     }
@@ -163,6 +207,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     private struct AudioSegment {
         let data: Data
         let wordTimings: [WordTiming]
+        let speedOverride: Float?
     }
 
     private static func synthesize(plan: LanguageFlow.Plan, apiKey: String, includeWordTimings: Bool) async throws -> [AudioSegment] {
@@ -178,7 +223,10 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
                         languageCode: sentence.route.languageTag,
                         name: sentence.route.googleVoiceName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
                     ),
-                    audioConfig: .init(speakingRate: googleSpeakingRate(sentence.route.googleSpeechRate)),
+                    audioConfig: .init(
+                        audioEncoding: "MP3",
+                        speakingRate: googleSpeakingRate(sentence.route.googleSpeechRate)
+                    ),
                     enableTimePointing: includeWordTimings ? ["SSML_MARK"] : nil
                 )
                 let apiVersion = includeWordTimings ? "v1beta1" : "v1"
@@ -206,7 +254,11 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
                         range: (sentenceOffset + chunk.offset + range.lowerBound)..<(sentenceOffset + chunk.offset + range.upperBound)
                     )
                 }.sorted { $0.timeSeconds < $1.timeSeconds }
-                audio.append(.init(data: segment, wordTimings: wordTimings))
+                audio.append(.init(
+                    data: segment,
+                    wordTimings: wordTimings,
+                    speedOverride: sentence.route.playbackSpeed.map { min(max($0, 0.5), 4) },
+                ))
             }
             sentenceOffset += sentence.text.utf16.count + 1
         }
@@ -282,19 +334,46 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
     private func updateWordHighlight() {
         guard let player else { return }
         let index = activeWordTimings.lastIndex { $0.timeSeconds <= player.currentTime }
-        guard index != activeWordIndex else { return }
-        activeWordIndex = index
-        onWordRange?(index.map { activeWordTimings[$0].range })
+        if index != activeWordIndex {
+            activeWordIndex = index
+            onWordRange?(index.map { activeWordTimings[$0].range })
+        }
+        guard let index else {
+            if activeReadingOffset != nil {
+                activeReadingOffset = nil
+                onReadingOffset?(nil)
+            }
+            return
+        }
+        let current = activeWordTimings[index]
+        guard activeWordTimings.indices.contains(index + 1) else {
+            reportReadingOffset(current.range.lowerBound)
+            return
+        }
+        let next = activeWordTimings[index + 1]
+        let interval = next.timeSeconds - current.timeSeconds
+        let progress = interval > 0 ? (player.currentTime - current.timeSeconds) / interval : 0
+        let offset = Double(current.range.lowerBound)
+            + Double(next.range.lowerBound - current.range.lowerBound) * min(max(progress, 0), 1)
+        reportReadingOffset(Int(offset.rounded(.down)))
+    }
+
+    private func reportReadingOffset(_ offset: Int) {
+        guard offset != activeReadingOffset else { return }
+        activeReadingOffset = offset
+        onReadingOffset?(Double(offset))
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         if flag {
-            wordTimer?.invalidate()
-            wordTimer = nil
-            onWordRange?(nil)
-            playNextSegment()
+            playbackTimer?.invalidate()
+            playbackTimer = nil
+            // Keep the last position visible while the next sentence's audio
+            // player is prepared. Clearing it briefly makes the popup fall
+            // back to the start of the full text between sentences.
+            playSegment(at: currentIndex + 1)
         } else {
-            audioQueue = []
+            stop()
             onFailure?("Google Cloud playback ended unexpectedly.")
         }
     }

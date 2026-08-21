@@ -26,6 +26,29 @@ enum LanguageFlow {
         )])
     }
 
+    // The speech engines use one UTF-16 code unit between sentence offsets.
+    // A newline is also one code unit, so it can preserve paragraph structure
+    // in the popup without shifting the word-boundary ranges.
+    static func playbackText(for plan: Plan, sourceText: String) -> String {
+        guard plan.sentences.count > 1 else { return plan.sentences.first?.text ?? sourceText }
+        let reflowed = reflow(sourceText)
+        var ranges: [Range<String.Index>] = []
+        var searchStart = reflowed.startIndex
+        for sentence in plan.sentences {
+            guard let range = reflowed.range(of: sentence.text, range: searchStart..<reflowed.endIndex) else {
+                return plan.sentences.map(\.text).joined(separator: " ")
+            }
+            ranges.append(range)
+            searchStart = range.upperBound
+        }
+        return plan.sentences.indices.map { index in
+            let sentence = plan.sentences[index].text
+            guard index < plan.sentences.index(before: plan.sentences.endIndex) else { return sentence }
+            let whitespace = reflowed[ranges[index].upperBound..<ranges[index + 1].lowerBound]
+            return sentence + (whitespace.contains("\n\n") ? "\n" : " ")
+        }.joined()
+    }
+
     // Rejoins the hard line wraps that PDFs and some editors insert mid-sentence
     // so text-to-speech does not pause at every visual line break. Blank lines
     // and list items keep their breaks because those pauses are intentional.

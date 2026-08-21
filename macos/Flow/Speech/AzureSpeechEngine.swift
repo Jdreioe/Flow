@@ -59,10 +59,12 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
     var onFailure: ((String) -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
     private var player: AVAudioPlayer?
+    private var synthesisGlobalSpeed: Float = 1
     private var synthesisTask: Task<Void, Never>?
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         stop()
+        synthesisGlobalSpeed = min(max(settings.playbackSpeed, 0.5), 4)
         guard let credentials = AzureCredentialsStore.load() else {
             onFailure?("Set up Azure Speech before choosing Azure voice.")
             return
@@ -81,6 +83,14 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
 
     func pause() { player?.pause() }
     func resume() { player?.play() }
+    func setSpeed(_ multiplier: Float) {
+        // Per-language speeds are baked into the synthesized audio; the global
+        // setting then scales playback relative to that synthesis-time value.
+        guard let player else { return }
+        let ratio = Float(multiplier) / max(synthesisGlobalSpeed, 0.5)
+        player.enableRate = true
+        player.rate = min(max(ratio, 0.5), 2)
+    }
     func stop() {
         synthesisTask?.cancel()
         synthesisTask = nil
@@ -114,7 +124,8 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
                 .replacingOccurrences(of: "<", with: "&lt;")
                 .replacingOccurrences(of: ">", with: "&gt;")
             let rate = sentence.route.azureSpeechRate
-            return "<voice name=\"\(voice)\"><lang xml:lang=\"\(languageTag)\"><prosody rate=\"\(azureRate(rate))%\">\(escaped)</prosody></lang></voice>"
+            let speed = sentence.route.effectivePlaybackSpeed(default: settings.playbackSpeed)
+            return "<voice name=\"\(voice)\"><lang xml:lang=\"\(languageTag)\"><prosody rate=\"\(azureRate(rate, speed: speed))%\">\(escaped)</prosody></lang></voice>"
         }.joined()
         let ssml = "<speak version=\"1.0\" xml:lang=\"\(settings.defaultLanguageTag)\">\(body)</speak>"
         var request = URLRequest(url: URL(string: credentials.endpoint + "/cognitiveservices/v1")!)
@@ -131,10 +142,10 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
         return data
     }
 
-    private static func azureRate(_ rate: Float) -> Int {
+    private static func azureRate(_ rate: Float, speed: Float) -> Int {
         let minimum = AVSpeechUtteranceMinimumSpeechRate
         let maximum = AVSpeechUtteranceMaximumSpeechRate
-        let position = (rate - minimum) / (maximum - minimum)
+        let position = min((rate - minimum) / (maximum - minimum) * speed, 1)
         return Int((position * 100 - 50).rounded())
     }
 

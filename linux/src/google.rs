@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use keyring::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -96,6 +96,7 @@ pub struct WordTiming {
 pub struct AudioSegment {
     pub audio: Vec<u8>,
     pub word_timings: Vec<WordTiming>,
+    pub playback_speed: Option<f64>,
 }
 
 pub fn validate_key(raw: &str) -> Result<String, GoogleError> {
@@ -221,6 +222,7 @@ pub fn synthesize(
             audio_segments.push(AudioSegment {
                 audio,
                 word_timings,
+                playback_speed: sentence.route.playback_speed,
             });
         }
         sentence_offset += sentence.text.encode_utf16().count() + 1;

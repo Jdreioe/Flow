@@ -44,7 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onUpdatesRequested = { [weak self] in
             self?.updater.checkForUpdates()
         }
+        model.onWhatsNewRequested = { [weak self] in
+            self?.showWhatsNew()
+        }
         installHotKey(model.settings.hotKey)
+        ChangelogWindowController.presentAfterUpdate()
+    }
+
+    private func showWhatsNew() {
+        ChangelogWindowController.showAll()
     }
 
     private func installHotKey(_ preset: HotKeyPreset) {
@@ -79,6 +87,8 @@ final class FlowModel: ObservableObject {
     @Published private(set) var state: PlaybackState = .hidden
     @Published private(set) var selectedText = ""
     @Published private(set) var currentWordRange: Range<Int>?
+    @Published private(set) var currentReadingOffset: Double?
+    var playbackSpeed: Float { settings.playbackSpeed }
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var azureEndpoint: String?
     @Published private(set) var azureVoices: [AzureVoiceCatalog.Voice] = []
@@ -104,6 +114,7 @@ final class FlowModel: ObservableObject {
     var onHotKeyChanged: ((HotKeyPreset) -> Void)?
     var onSettingsRequested: (() -> Void)?
     var onUpdatesRequested: (() -> Void)?
+    var onWhatsNewRequested: (() -> Void)?
 
     private let systemSpeech = SystemSpeechEngine()
     private let azureSpeech = AzureSpeechEngine()
@@ -138,6 +149,9 @@ final class FlowModel: ObservableObject {
         googleSpeech.onWordRange = { [weak self] range in
             Task { @MainActor in self?.currentWordRange = range }
         }
+        googleSpeech.onReadingOffset = { [weak self] offset in
+            Task { @MainActor in self?.currentReadingOffset = offset }
+        }
         saveSettings()
         refreshAzureVoices()
         refreshGoogleVoices()
@@ -168,6 +182,10 @@ final class FlowModel: ObservableObject {
         onUpdatesRequested?()
     }
 
+    func openWhatsNew() {
+        onWhatsNewRequested?()
+    }
+
     func playTestVoice() {
         dismissTask?.cancel()
         selectedText = "Flow is ready to read selected text."
@@ -175,6 +193,7 @@ final class FlowModel: ObservableObject {
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
         currentWordRange = nil
+        currentReadingOffset = nil
         activeSpeech = speech
         languagePlan = plan
         state = .preparing
@@ -196,10 +215,17 @@ final class FlowModel: ObservableObject {
         }
     }
 
+    func setPlaybackSpeed(_ multiplier: Float) {
+        let clamped = min(max(multiplier, 0.5), 4)
+        settings.playbackSpeed = clamped
+        activeSpeech?.setSpeed(clamped)
+    }
+
     func stop() {
         dismissTask?.cancel()
         activeSpeech?.stop()
         currentWordRange = nil
+        currentReadingOffset = nil
         selectedText = ""
         languagePlan = nil
         state = .hidden
@@ -340,9 +366,10 @@ final class FlowModel: ObservableObject {
         manualRouteNeeded = false
         activeSpeech = speech
         selectedText = settings.wordHighlightingEnabled
-            ? plan.sentences.map(\.text).joined(separator: " ")
+            ? LanguageFlow.playbackText(for: plan, sourceText: text)
             : text
         currentWordRange = nil
+        currentReadingOffset = nil
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
@@ -353,6 +380,7 @@ final class FlowModel: ObservableObject {
     private func showMessage(_ message: String) {
         selectedText = ""
         currentWordRange = nil
+        currentReadingOffset = nil
         languagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
@@ -363,6 +391,7 @@ final class FlowModel: ObservableObject {
         guard state == .playing || state == .paused else { return }
         state = .finished
         currentWordRange = nil
+        currentReadingOffset = nil
         dismissAfterDelay()
     }
 
