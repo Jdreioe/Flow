@@ -1,33 +1,39 @@
-# Flow Changelog
+# Flow changelog
 
 ## 0.6
 
-- Playback speed control while reading
-- Optional spoken-word highlighting
-- Per-text language override held until cleared
-- Language Flow requires a route before reading unconfigured languages
+Playback is much easier to follow and control.
+
+- Change the playback speed while speech is running.
+- Set a different playback speed for each language route.
+- See playback progress and seek through the current selection.
+- Optionally highlight each spoken word in the source text.
+- Override the detected language for a selection and keep that choice until it is cleared.
+- Ask for a language route before reading text when Language Flow finds a language that is not configured.
 
 ## 0.5
 
-- Bug fixes
-- Better auto language selection
+- Improve automatic language selection for mixed-language text.
+- Fix issues found in the first releases.
 
 ## 0.35
 
-- Manual macOS update checks with release validation
+- Check for updates manually and verify that an available release matches the installed app.
 
 ## 0.3
 
-- Sparkle-based automatic updates
-- Cloud speech sources: Azure Speech and Google Cloud Text-to-Speech
-- Modularized macOS app with cloud voice settings
+- Install signed macOS updates automatically with Sparkle.
+- Use Azure Speech or Google Cloud Text-to-Speech alongside macOS system voices.
+- Configure cloud speech providers, credentials, voices, and language routes in Settings.
 
 ## 0.2
 
-- First menu-bar release: capture a selection and read it aloud
-- Sentence-level Language Flow routing to per-language voices
-- Configurable language voices and global hot key
+- Read selected text from the macOS menu bar with a global hotkey.
+- Route each sentence to the voice configured for its detected language.
+- Configure a default voice and additional language voices.
+- Choose the global hotkey used to start reading.
 
 ## 0.1
 
-- Initial release with Azure TTS and System TTS
+- First release of Flow for macOS.
+- Read selected text with Azure Speech or a macOS system voice.
