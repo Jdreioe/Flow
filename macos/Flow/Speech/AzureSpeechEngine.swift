@@ -100,9 +100,7 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
 
     private static func synthesize(plan: LanguageFlow.Plan, settings: FlowSettings, credentials: AzureSpeechCredentials) async throws -> Data {
         let body = try plan.sentences.map { sentence in
-            let voiceName = settings.azureVoiceMode == .multilingual
-                ? settings.azureVoiceName
-                : (sentence.route.azureVoiceName ?? settings.azureVoiceName)
+            let voiceName = sentence.route.azureVoiceName ?? settings.azureVoiceName
             let voice = voiceName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !voice.isEmpty, voice.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
                 throw AzureConfigurationError.invalidVoice
@@ -114,9 +112,7 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
                 .replacingOccurrences(of: "&", with: "&amp;")
                 .replacingOccurrences(of: "<", with: "&lt;")
                 .replacingOccurrences(of: ">", with: "&gt;")
-            let rate = settings.azureVoiceMode == .multilingual
-                ? settings.azureSpeechRate
-                : sentence.route.azureSpeechRate
+            let rate = sentence.route.azureSpeechRate
             return "<voice name=\"\(voice)\"><lang xml:lang=\"\(languageTag)\"><prosody rate=\"\(azureRate(rate))%\">\(escaped)</prosody></lang></voice>"
         }.joined()
         let ssml = "<speak version=\"1.0\" xml:lang=\"\(settings.defaultLanguageTag)\">\(body)</speak>"

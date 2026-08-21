@@ -7,9 +7,6 @@ use uuid::Uuid;
 
 use crate::model::{LanguageRoute, Settings};
 
-const UNCERTAIN_CONFIDENCE: f64 = 0.75;
-const UNCERTAIN_LEAD: f64 = 0.15;
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sentence {
@@ -117,22 +114,27 @@ fn detected_plan(text: &str, settings: &Settings) -> Plan {
             continue;
         }
         let confidence_values = detector.compute_language_confidence_values(sentence);
-        let detected_tag = confidence_values
-            .first()
-            .map(|(language, _)| language_tag(*language).to_owned());
-        let route = settings
-            .language_switching_enabled
-            .then(|| {
-                detected_tag
-                    .as_deref()
-                    .and_then(|tag| settings.language_route(tag))
-            })
-            .flatten();
+        let detected_language = confidence_values.first().map(|(language, _)| *language);
+        // Short Scandinavian sentences are often ambiguous. Prefer a
+        // configured Scandinavian candidate, but never substitute an
+        // unrelated configured language for the detector's leading result.
+        let configured = confidence_values.iter().find_map(|(language, _)| {
+            let Some(detected_language) = detected_language else {
+                return None;
+            };
+            if !shares_automatic_language_group(detected_language, *language) {
+                return None;
+            }
+            let tag = language_tag(*language);
+            settings.language_route(tag).map(|route| (tag.to_owned(), route))
+        });
+        let detected_tag = configured
+            .as_ref()
+            .map(|(tag, _)| tag.clone())
+            .or_else(|| confidence_values.first().map(|(language, _)| language_tag(*language).to_owned()));
+        let route = configured.map(|(_, route)| route);
         let configured = route.is_some();
-        let confidence = confidence_values.first().map_or(0.0, |(_, value)| *value);
-        let second = confidence_values.get(1).map_or(0.0, |(_, value)| *value);
-        let uncertain = confidence < UNCERTAIN_CONFIDENCE || confidence - second < UNCERTAIN_LEAD;
-        let needs_review = settings.language_switching_enabled && (uncertain || !configured);
+        let needs_review = !configured;
         sentences.push(Sentence {
             id: Uuid::new_v4(),
             text: sentence.into(),
@@ -199,6 +201,18 @@ fn language_tag(language: Language) -> &'static str {
     }
 }
 
+fn shares_automatic_language_group(detected: Language, candidate: Language) -> bool {
+    if detected == candidate {
+        return true;
+    }
+
+    matches!(
+        (detected, candidate),
+        (Language::Danish | Language::Swedish | Language::Bokmal,
+         Language::Danish | Language::Swedish | Language::Bokmal)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +235,33 @@ mod tests {
         assert_eq!(plan.sentences[0].route.language_tag, "en-US");
         assert_eq!(plan.sentences[1].route.language_tag, "da-DK");
         assert!(!plan.needs_language_check());
+    }
+
+    #[test]
+    fn prefers_a_configured_scandinavian_language_over_an_ambiguous_candidate() {
+        let settings = Settings {
+            default_language_tag: "en-US".into(),
+            language_routes: vec![LanguageRoute::new("da-DK")],
+            ..Settings::default()
+        };
+
+        let plan = plan("Det er en god dag", &settings);
+        assert_eq!(plan.sentences[0].detected_language_tag.as_deref(), Some("da-DK"));
+        assert_eq!(plan.sentences[0].route.language_tag, "da-DK");
+        assert!(!plan.needs_language_check());
+    }
+
+    #[test]
+    fn unrelated_configured_language_does_not_replace_detected_german() {
+        let settings = Settings {
+            default_language_tag: "en-US".into(),
+            language_routes: vec![LanguageRoute::new("da-DK")],
+            ..Settings::default()
+        };
+
+        let plan = plan("Ich heiße Jonas", &settings);
+        assert_eq!(plan.sentences[0].detected_language_tag.as_deref(), Some("de-DE"));
+        assert!(plan.needs_language_check());
     }
 
     #[test]

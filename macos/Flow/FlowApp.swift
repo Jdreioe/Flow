@@ -88,6 +88,7 @@ final class FlowModel: ObservableObject {
     @Published private(set) var languagePlan: LanguageFlow.Plan?
     @Published private(set) var textLanguageOverride: String?
     @Published private(set) var overrideNeedsRoute = false
+    @Published private(set) var manualRouteNeeded = false
     @Published var settings: FlowSettings {
         didSet {
             saveSettings()
@@ -202,6 +203,7 @@ final class FlowModel: ObservableObject {
         let hadLanguageOverride = textLanguageOverride != nil
         textLanguageOverride = nil
         overrideNeedsRoute = false
+        manualRouteNeeded = false
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
             showMessage("Flow needs Accessibility permission to read selected text.")
@@ -226,10 +228,8 @@ final class FlowModel: ObservableObject {
             }
             // Resetting an override requires a new Auto plan, so replay this
             // selection instead of resuming the old overridden plan.
-            // Detection never blocks playback (ADR 0003): uncertain or
-            // unconfigured sentences read with their best-guess route.
             let plan = LanguageFlow.plan(text: text, settings: settings)
-            startReading(text: text, plan: LanguageFlow.withoutReview(plan))
+            startAutoPlan(text: text, plan: plan)
         }
     }
 
@@ -241,6 +241,10 @@ final class FlowModel: ObservableObject {
             }
         }
         return tags
+    }
+
+    var manualRouteSentenceText: String? {
+        languagePlan?.sentences.first(where: \.needsReview)?.text
     }
 
     func setRoute(_ routeID: UUID, forAllDetectedLanguage languageTag: String) {
@@ -273,11 +277,9 @@ final class FlowModel: ObservableObject {
                     startReading(text: selectedText, plan: plan)
                 }
             } else {
-                // Restoring Auto never blocks: read immediately even when
-                // detection would flag sentences for review (ADR 0003).
-                let plan = LanguageFlow.withoutReview(
-                    LanguageFlow.plan(text: selectedText, settings: settings))
-                startReading(text: selectedText, plan: plan)
+                startAutoPlan(
+                    text: selectedText,
+                    plan: LanguageFlow.plan(text: selectedText, settings: settings))
             }
         default:
             break
@@ -285,19 +287,48 @@ final class FlowModel: ObservableObject {
     }
 
     func applyOverrideRoute(_ routeID: UUID) {
-        guard textLanguageOverride != nil,
+        guard (textLanguageOverride != nil || manualRouteNeeded),
               let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }),
               var plan = languagePlan else { return }
-        for index in plan.sentences.indices {
-            plan.sentences[index].route = route
-            plan.sentences[index].needsReview = false
+        if textLanguageOverride != nil {
+            for index in plan.sentences.indices {
+                plan.sentences[index].route = route
+                plan.sentences[index].needsReview = false
+            }
+            manualRouteNeeded = false
+            startReading(text: selectedText, plan: plan)
+            return
         }
+
+        guard let index = plan.sentences.firstIndex(where: \.needsReview) else { return }
+        plan.sentences[index].route = route
+        plan.sentences[index].needsReview = false
+        languagePlan = plan
+        if plan.needsLanguageCheck {
+            return
+        }
+        manualRouteNeeded = false
         startReading(text: selectedText, plan: plan)
+    }
+
+    private func startAutoPlan(text: String, plan: LanguageFlow.Plan) {
+        guard plan.needsLanguageCheck else {
+            manualRouteNeeded = false
+            startReading(text: text, plan: plan)
+            return
+        }
+        activeSpeech?.stop()
+        selectedText = text
+        languagePlan = plan
+        manualRouteNeeded = true
+        state = .awaitingRoute
+        onPopupVisibilityChanged?(true)
     }
 
     private func startReading(text: String, plan: LanguageFlow.Plan) {
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
+        manualRouteNeeded = false
         activeSpeech = speech
         selectedText = text
         languagePlan = plan

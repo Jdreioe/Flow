@@ -295,7 +295,19 @@ ApplicationWindow {
                     visible: backend.state === "awaitingRoute"
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
+                    text: backend.manual_route_needed
+                        ? qsTr("Choose how Flow should read this sentence before playback starts.")
+                        : qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
+                }
+
+                Label {
+                    visible: backend.manual_route_needed
+                    Layout.fillWidth: true
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                    wrapMode: Text.WordWrap
+                    text: backend.manual_route_sentence_text
+                    Accessible.name: qsTr("Sentence requiring a voice choice")
                 }
 
                 Label {
@@ -313,8 +325,8 @@ ApplicationWindow {
 
                 ComboBox {
                     id: overrideRoutePicker
-                    visible: backend.text_language_override !== ""
-                        && backend.override_needs_route
+                    visible: (backend.text_language_override !== "" && backend.override_needs_route)
+                        || backend.manual_route_needed
                     property string chosenRouteId: ""
                     onVisibleChanged: if (!visible) chosenRouteId = ""
                     Layout.preferredWidth: 260
@@ -338,7 +350,9 @@ ApplicationWindow {
                         chosenRouteId = currentValue
                         backend.set_override_route(currentValue)
                     }
-                    Accessible.name: qsTr("Read the overridden language as")
+                    Accessible.name: backend.manual_route_needed
+                        ? qsTr("Read this sentence as")
+                        : qsTr("Read the overridden language as")
                 }
 
                 ScrollView {
@@ -522,49 +536,100 @@ ApplicationWindow {
 
                     ColumnLayout {
                         anchors.fill: parent
-                        CheckBox {
-                            text: "Let Flow switch languages"
-                            checked: settings.languageSwitchingEnabled
-                            onToggled: backend.update_setting("languageSwitchingEnabled", checked ? "true" : "false")
-                        }
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "The default voice is the fallback. Add another language to give it its own voice. Detection stays on this device."
+                            text: "Choose a fallback voice, then add languages that need their own voice. Detection stays on this device."
                         }
                         ComboBox {
-                            id: defaultLanguagePicker
+                            visible: settings.speechSource === "system"
                             Layout.fillWidth: true
-                            model: snapshot.supportedLanguages
-                            currentIndex: model.findIndex(function(item) { return item[0] === settings.defaultLanguageTag })
-                            delegate: ItemDelegate {
-                                required property var modelData
-                                width: defaultLanguagePicker.width
-                                text: modelData[1]
+                            model: ["Desktop default voice"].concat(root.voicesFor(settings.defaultLanguageTag))
+                            currentIndex: settings.systemVoiceName
+                                ? Math.max(0, model.indexOf(settings.systemVoiceName))
+                                : 0
+                            displayText: currentIndex === 0 ? "Fallback voice: Desktop default voice"
+                                : "Fallback voice: " + currentText
+                            onActivated: backend.update_setting("systemVoiceName",
+                                currentIndex === 0 ? "" : currentText)
+                        }
+                        RowLayout {
+                            visible: settings.speechSource === "system"
+                            Label { text: "Fallback speech rate" }
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1
+                                to: 1
+                                value: settings.systemSpeechRate
+                                onMoved: backend.update_setting("systemSpeechRate", value.toString())
                             }
-                            displayText: "Default language: " + root.languageName(settings.defaultLanguageTag)
-                            onActivated: backend.update_setting("defaultLanguageTag", model[currentIndex][0])
+                        }
+                        ComboBox {
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
+                            Layout.fillWidth: true
+                            model: snapshot.azureVoices.map(function(voice) { return voice.shortName })
+                            currentIndex: Math.max(0, model.indexOf(settings.azureVoiceName))
+                            displayText: currentText || "Choose a fallback Azure voice"
+                            onActivated: backend.update_setting("azureVoiceName", currentText)
+                        }
+                        RowLayout {
+                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
+                            Label { text: "Fallback speech rate" }
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1
+                                to: 1
+                                value: settings.azureSpeechRate
+                                onMoved: backend.update_setting("azureSpeechRate", value.toString())
+                            }
+                        }
+                        ComboBox {
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            Layout.fillWidth: true
+                            model: ["Google default voice"].concat(snapshot.googleVoices.map(function(voice) { return voice.name }))
+                            currentIndex: settings.googleVoiceName
+                                ? Math.max(0, model.indexOf(settings.googleVoiceName))
+                                : 0
+                            onActivated: backend.update_setting("googleVoiceName",
+                                currentIndex === 0 ? "" : currentText)
+                        }
+                        RowLayout {
+                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
+                            Label { text: "Fallback speech rate" }
+                            Slider {
+                                Layout.fillWidth: true
+                                from: -1
+                                to: 1
+                                value: settings.googleSpeechRate
+                                onMoved: backend.update_setting("googleSpeechRate", value.toString())
+                            }
                         }
 
                         Repeater {
-                            model: root.allRoutes()
+                            model: settings.languageRoutes
 
                             Frame {
                                 required property var modelData
                                 Layout.fillWidth: true
+                                property bool expanded: false
 
                                 ColumnLayout {
                                     anchors.fill: parent
-                                    Label {
-                                        text: modelData.id === "00000000-0000-0000-0000-000000000001"
-                                            ? "Default voice"
-                                            : root.languageName(modelData.languageTag)
+                                    Button {
+                                        text: root.languageName(modelData.languageTag) + " · " + (
+                                            settings.speechSource === "system"
+                                                ? (modelData.systemVoiceName || "System default voice")
+                                                : settings.speechSource === "azure"
+                                                    ? (modelData.azureVoiceName || "Fallback Azure voice")
+                                                    : (modelData.googleVoiceName || "Google default voice"))
                                         font.bold: true
+                                        flat: true
+                                        onClicked: parent.parent.expanded = !parent.parent.expanded
                                     }
                                     ComboBox {
                                         id: systemVoicePicker
-                                        visible: settings.speechSource === "system"
+                                        visible: parent.parent.expanded && settings.speechSource === "system"
                                         Layout.fillWidth: true
                                         model: ["Desktop default voice"].concat(root.voicesFor(modelData.languageTag))
                                         currentIndex: modelData.systemVoiceName
@@ -574,7 +639,7 @@ ApplicationWindow {
                                             currentIndex === 0 ? "" : currentText)
                                     }
                                     RowLayout {
-                                        visible: settings.speechSource === "system"
+                                        visible: parent.parent.expanded && settings.speechSource === "system"
                                         Label { text: "Speech rate" }
                                         Slider {
                                             Layout.fillWidth: true
@@ -586,7 +651,7 @@ ApplicationWindow {
                                     }
                                     ComboBox {
                                         id: routeAzureVoicePicker
-                                        visible: settings.speechSource === "azure" && settings.azureVoiceMode === "perLanguage"
+                                        visible: parent.parent.expanded && settings.speechSource === "azure"
                                         Layout.fillWidth: true
                                         model: root.azureVoicesFor(modelData.languageTag, false)
                                         currentIndex: Math.max(0, model.indexOf(modelData.azureVoiceName || ""))
@@ -594,7 +659,7 @@ ApplicationWindow {
                                         onActivated: backend.update_route(modelData.id, "azureVoiceName", currentText)
                                     }
                                     RowLayout {
-                                        visible: settings.speechSource === "azure" && settings.azureVoiceMode === "perLanguage"
+                                        visible: parent.parent.expanded && settings.speechSource === "azure"
                                         Label { text: "Azure speech rate" }
                                         Slider {
                                             Layout.fillWidth: true
@@ -606,7 +671,7 @@ ApplicationWindow {
                                     }
                                     ComboBox {
                                         id: routeGoogleVoicePicker
-                                        visible: settings.speechSource === "google"
+                                        visible: parent.parent.expanded && settings.speechSource === "google"
                                         Layout.fillWidth: true
                                         model: ["Google default voice"].concat(root.googleVoicesFor(modelData.languageTag))
                                         currentIndex: modelData.googleVoiceName
@@ -616,7 +681,7 @@ ApplicationWindow {
                                             currentIndex === 0 ? "" : currentText)
                                     }
                                     RowLayout {
-                                        visible: settings.speechSource === "google"
+                                        visible: parent.parent.expanded && settings.speechSource === "google"
                                         Label { text: "Google speech rate" }
                                         Slider {
                                             Layout.fillWidth: true
@@ -627,7 +692,7 @@ ApplicationWindow {
                                         }
                                     }
                                     Button {
-                                        visible: modelData.id !== "00000000-0000-0000-0000-000000000001"
+                                        visible: parent.parent.expanded
                                         text: "Remove language"
                                         onClicked: backend.remove_language(modelData.id)
                                     }
@@ -686,40 +751,6 @@ ApplicationWindow {
                             visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             text: settings.azureEndpoint ? "Configured for " + settings.azureEndpoint : ""
                         }
-                        ComboBox {
-                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
-                            Layout.fillWidth: true
-                            model: [
-                                { value: "multilingual", label: "One multilingual voice" },
-                                { value: "perLanguage", label: "A voice per language" }
-                            ]
-                            textRole: "label"
-                            valueRole: "value"
-                            currentIndex: settings.azureVoiceMode === "perLanguage" ? 1 : 0
-                            onActivated: backend.update_setting("azureVoiceMode", currentValue)
-                        }
-                        ComboBox {
-                            id: azureVoicePicker
-                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
-                                && settings.azureVoiceMode === "multilingual"
-                            Layout.fillWidth: true
-                            model: root.azureVoicesFor(settings.defaultLanguageTag, true)
-                            currentIndex: Math.max(0, model.indexOf(settings.azureVoiceName))
-                            displayText: currentText || "Choose a multilingual Azure voice"
-                            onActivated: backend.update_setting("azureVoiceName", currentText)
-                        }
-                        RowLayout {
-                            visible: settings.speechSource === "azure" && !!settings.azureEndpoint
-                                && settings.azureVoiceMode === "multilingual"
-                            Label { text: "Azure speech rate" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: -1
-                                to: 1
-                                value: settings.azureSpeechRate
-                                onMoved: backend.update_setting("azureSpeechRate", value.toString())
-                            }
-                        }
                         TextField {
                             id: endpointField
                             visible: settings.speechSource === "azure" && !settings.azureEndpoint
@@ -772,28 +803,6 @@ ApplicationWindow {
                         Label {
                             visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
                             text: "Google Cloud API key configured"
-                        }
-                        ComboBox {
-                            id: googleVoicePicker
-                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
-                            Layout.fillWidth: true
-                            model: ["Google default voice"].concat(root.googleVoicesFor(settings.defaultLanguageTag))
-                            currentIndex: settings.googleVoiceName
-                                ? Math.max(0, model.indexOf(settings.googleVoiceName))
-                                : 0
-                            onActivated: backend.update_setting("googleVoiceName",
-                                currentIndex === 0 ? "" : currentText)
-                        }
-                        RowLayout {
-                            visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
-                            Label { text: "Google speech rate" }
-                            Slider {
-                                Layout.fillWidth: true
-                                from: -1
-                                to: 1
-                                value: settings.googleSpeechRate
-                                onMoved: backend.update_setting("googleSpeechRate", value.toString())
-                            }
                         }
                         TextField {
                             id: googleKeyField

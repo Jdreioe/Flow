@@ -32,22 +32,6 @@ struct FlowSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Language Flow") {
-                Toggle("Let Flow switch languages", isOn: $model.settings.languageSwitchingEnabled)
-                Text("The default voice reads your default language and is the fallback. Add another language below to give it its own voice.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Default language", selection: Binding(
-                    get: { model.settings.defaultLanguageTag },
-                        set: { languageTag in
-                            model.settings.defaultLanguageTag = languageTag
-                            model.settings.voiceIdentifier = SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier
-                            model.settings.googleVoiceName = nil
-                        },
-                )) {
-                    ForEach(SupportedLanguage.all) { language in
-                        Text(language.title).tag(language.tag)
-                    }
-                }
                 LanguageRouteEditor(
                     route: Binding(
                         get: { model.settings.defaultLanguageRoute },
@@ -64,21 +48,20 @@ struct FlowSettingsView: View {
                     azureVoices: model.azureVoices,
                     googleVoices: model.googleVoices,
                     showSystemRoute: model.settings.speechSource == .system,
-                    showAzureRoute: model.settings.speechSource == .azure && model.settings.azureVoiceMode == .perLanguage,
+                    showAzureRoute: model.settings.speechSource == .azure,
                     showGoogleRoute: model.settings.speechSource == .google,
                     isDefault: true,
                     remove: {},
                 )
                 ForEach($model.settings.languageRoutes) { $route in
-                        LanguageRouteEditor(
+                        CollapsibleLanguageRouteEditor(
                             route: $route,
                             voices: voices,
                             azureVoices: model.azureVoices,
                             googleVoices: model.googleVoices,
                             showSystemRoute: model.settings.speechSource == .system,
-                            showAzureRoute: model.settings.speechSource == .azure && model.settings.azureVoiceMode == .perLanguage,
+                            showAzureRoute: model.settings.speechSource == .azure,
                             showGoogleRoute: model.settings.speechSource == .google,
-                            isDefault: false,
                     ) {
                         model.settings.languageRoutes.removeAll { $0.id == route.id }
                     }
@@ -93,14 +76,7 @@ struct FlowSettingsView: View {
                         }
                     }
                     Button("Add language") {
-                        model.settings.languageRoutes.append(.init(
-                            languageTag: languageToAdd,
-                            systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageToAdd)?.identifier,
-                            azureVoiceName: model.settings.azureVoiceName,
-                            azureSpeechRate: model.settings.azureSpeechRate,
-                            googleVoiceName: nil,
-                            googleSpeechRate: model.settings.googleSpeechRate,
-                        ))
+                        addLanguage(languageToAdd)
                     }
                 }
             }
@@ -131,6 +107,19 @@ struct FlowSettingsView: View {
         .formStyle(.grouped)
         .padding()
     }
+
+    private func addLanguage(_ languageTag: String) {
+        let azureVoice = model.azureVoices.first { $0.supports(languageTag: languageTag) }?.shortName
+        let googleVoice = model.googleVoices.first { $0.supports(languageTag: languageTag) }?.name
+        model.settings.languageRoutes.append(.init(
+            languageTag: languageTag,
+            systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier,
+            azureVoiceName: azureVoice ?? model.settings.azureVoiceName,
+            azureSpeechRate: model.settings.azureSpeechRate,
+            googleVoiceName: googleVoice,
+            googleSpeechRate: model.settings.googleSpeechRate,
+        ))
+    }
 }
 
 private struct LanguageRouteEditor: View {
@@ -143,6 +132,7 @@ private struct LanguageRouteEditor: View {
     let showGoogleRoute: Bool
     let isDefault: Bool
     let remove: () -> Void
+    var showsHeader = true
 
     private var matchingVoices: [SystemSpeechEngine.Voice] {
         let base = route.languageTag.split(separator: "-").first?.lowercased()
@@ -159,12 +149,14 @@ private struct LanguageRouteEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(isDefault ? "Default voice" : route.displayName)
-                    .font(.headline)
-                Spacer()
-                if !isDefault {
-                    Button("Remove", role: .destructive, action: remove)
+            if showsHeader {
+                HStack {
+                    Text(isDefault ? "Fallback voice" : route.displayName)
+                        .font(.headline)
+                    Spacer()
+                    if !isDefault {
+                        Button("Remove", role: .destructive, action: remove)
+                    }
                 }
             }
             if showSystemRoute {
@@ -222,6 +214,63 @@ private struct LanguageRouteEditor: View {
     }
 }
 
+private struct CollapsibleLanguageRouteEditor: View {
+    @Binding var route: FlowSettings.LanguageRoute
+    let voices: [SystemSpeechEngine.Voice]
+    let azureVoices: [AzureVoiceCatalog.Voice]
+    let googleVoices: [GoogleVoiceCatalog.Voice]
+    let showSystemRoute: Bool
+    let showAzureRoute: Bool
+    let showGoogleRoute: Bool
+    let remove: () -> Void
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(route.displayName)
+                        Text(voiceSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Button("Remove", role: .destructive, action: remove)
+            }
+            if expanded {
+                LanguageRouteEditor(
+                    route: $route,
+                    voices: voices,
+                    azureVoices: azureVoices,
+                    googleVoices: googleVoices,
+                    showSystemRoute: showSystemRoute,
+                    showAzureRoute: showAzureRoute,
+                    showGoogleRoute: showGoogleRoute,
+                    isDefault: false,
+                    remove: {},
+                    showsHeader: false,
+                )
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var voiceSummary: String {
+        if showSystemRoute {
+            return route.systemVoiceIdentifier ?? "System default voice"
+        }
+        if showAzureRoute {
+            return route.azureVoiceName ?? "Fallback Azure voice"
+        }
+        return route.googleVoiceName ?? "Google default voice"
+    }
+}
+
 private struct SpeechConfigurationView: View {
     @ObservedObject var model: FlowModel
     @State private var endpoint = ""
@@ -229,10 +278,6 @@ private struct SpeechConfigurationView: View {
     @State private var googleAPIKey = ""
     @State private var azureError: String?
     @State private var googleError: String?
-
-    private var multilingualVoices: [AzureVoiceCatalog.Voice] {
-        model.azureVoices.filter(\.isMultilingual)
-    }
 
     private var defaultGoogleVoices: [GoogleVoiceCatalog.Voice] {
         model.googleVoices.filter { $0.supports(languageTag: model.settings.defaultLanguageTag) }
@@ -253,36 +298,19 @@ private struct SpeechConfigurationView: View {
                 Text("Configured for \(configuredEndpoint)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("Azure voice mode", selection: $model.settings.azureVoiceMode) {
-                    ForEach(FlowSettings.AzureVoiceMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                if model.settings.azureVoiceMode == .multilingual {
-                    if multilingualVoices.isEmpty {
-                        if let message = model.azureVoiceLoadError {
-                            Text(message)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        } else {
-                            Text("Loading Azure voices…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Picker("Azure voice", selection: $model.settings.azureVoiceName) {
-                            ForEach(multilingualVoices) { voice in
-                                Text(voice.shortName).tag(voice.shortName)
-                            }
+                if model.azureVoices.isEmpty {
+                    Text(model.azureVoiceLoadError ?? "Loading Azure voices…")
+                        .font(.caption)
+                        .foregroundStyle(model.azureVoiceLoadError == nil ? Color.secondary : Color.orange)
+                } else {
+                    Picker("Fallback Azure voice", selection: $model.settings.azureVoiceName) {
+                        ForEach(model.azureVoices) { voice in
+                            Text(voice.shortName).tag(voice.shortName)
                         }
                     }
                     Slider(value: $model.settings.azureSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
-                        Text("Azure speech rate")
+                        Text("Fallback speech rate")
                     }
-                } else {
-                    Text("Set each language's Azure voice and rate in Language Flow.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 Button("Refresh Azure voices") { model.refreshAzureVoices() }
                 Link("View your Azure Speech resources", destination: AzurePortalURLs.speechResources)

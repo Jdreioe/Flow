@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use flow_core::{
     language::Plan,
-    model::{AzureVoiceMode, Settings},
+    model::Settings,
 };
 
 const KEYRING_SERVICE: &str = "io.github.jdreioe.flow.azure-speech";
@@ -157,14 +157,11 @@ pub fn synthesize(
 fn ssml(plan: &Plan, settings: &Settings) -> Result<String, AzureError> {
     let mut body = String::new();
     for sentence in &plan.sentences {
-        let raw_voice = match settings.azure_voice_mode {
-            AzureVoiceMode::Multilingual => &settings.azure_voice_name,
-            AzureVoiceMode::PerLanguage => sentence
-                .route
-                .azure_voice_name
-                .as_ref()
-                .unwrap_or(&settings.azure_voice_name),
-        };
+        let raw_voice = sentence
+            .route
+            .azure_voice_name
+            .as_ref()
+            .unwrap_or(&settings.azure_voice_name);
         let voice = raw_voice.trim();
         if voice.is_empty()
             || !voice
@@ -173,10 +170,7 @@ fn ssml(plan: &Plan, settings: &Settings) -> Result<String, AzureError> {
         {
             return Err(AzureError::InvalidVoice);
         }
-        let rate = match settings.azure_voice_mode {
-            AzureVoiceMode::Multilingual => settings.azure_speech_rate,
-            AzureVoiceMode::PerLanguage => sentence.route.azure_speech_rate,
-        };
+        let rate = sentence.route.azure_speech_rate;
         body.push_str(&format!(
             "<voice name=\"{}\"><lang xml:lang=\"{}\"><prosody rate=\"{}%\">{}</prosody></lang></voice>",
             voice,

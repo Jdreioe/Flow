@@ -21,9 +21,11 @@ explicit default-language picker, and the "Let Flow switch languages" toggle.
 
 ## Playback
 
-**Never block.** The language check state (macOS `PlaybackPopup.swift`
-language-check view, Linux `Main.qml` language-check frames) is deleted in
-full. Playback starts immediately using best-guess routing.
+**Configured languages first, within an ambiguity group.** Auto may choose a
+configured Danish, Swedish, or Norwegian Bokmål route when the detector is
+ambiguous between those languages. For every other detected language, an absent
+route opens one compact route picker instead of silently using the fallback
+voice.
 
 Correction is post-hoc and **silent until wrong**:
 
