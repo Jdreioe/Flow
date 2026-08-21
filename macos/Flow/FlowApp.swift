@@ -995,6 +995,17 @@ enum GoogleVoiceCatalog {
 
         var id: String { name }
 
+        var displayName: String {
+            var parts = name.split(separator: "-")
+            if let language = parts.first, (2...3).contains(language.count), language.allSatisfy(\.isLetter) {
+                parts.removeFirst()
+                if let region = parts.first, region.count == 2, region.allSatisfy(\.isUppercase) {
+                    parts.removeFirst()
+                }
+            }
+            return parts.joined(separator: "-")
+        }
+
         func supports(languageTag: String) -> Bool {
             let base = languageTag.split(separator: "-").first?.lowercased()
             return languageCodes.contains {
@@ -1826,7 +1837,7 @@ private struct LanguageRouteEditor: View {
                     Text("Azure speech rate")
                 }
                 if matchingAzureVoices.isEmpty {
-                    Text("No Azure voices support (route.displayName) in this resource's region.")
+                    Text("No Azure voices support \(route.displayName) in this resource's region.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
@@ -1835,7 +1846,7 @@ private struct LanguageRouteEditor: View {
                 Picker("Google voice", selection: $route.googleVoiceName) {
                     Text("Google default voice").tag(String?.none)
                     ForEach(matchingGoogleVoices) { voice in
-                        Text(voice.name).tag(String?.some(voice.name))
+                        Text(voice.displayName).tag(String?.some(voice.name))
                     }
                 }
                 Slider(value: $route.googleSpeechRate, in: AVSpeechUtteranceMinimumSpeechRate...AVSpeechUtteranceMaximumSpeechRate) {
@@ -1967,7 +1978,7 @@ private struct SpeechConfigurationView: View {
                 Picker("Google voice", selection: $model.settings.googleVoiceName) {
                     Text("Google default voice").tag(String?.none)
                     ForEach(defaultGoogleVoices) { voice in
-                        Text(voice.name).tag(String?.some(voice.name))
+                        Text(voice.displayName).tag(String?.some(voice.name))
                     }
                 }
             }
