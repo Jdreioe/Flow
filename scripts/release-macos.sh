@@ -24,11 +24,8 @@ if ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
     exit 1
 fi
 
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-    VERSION="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
-        | awk '/MARKETING_VERSION/ { print $3; exit }')"
-fi
+VERSION="${1:-$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
+    | awk '/MARKETING_VERSION/ { print $3; exit }')}"
 [ -n "$VERSION" ] || { echo "error: could not determine version; pass one: $0 1.2.0" >&2; exit 1; }
 case "$VERSION" in
     v*) VERSION="${VERSION#v}" ;;
@@ -46,15 +43,21 @@ esac
 
 echo "Releasing $TAG from $REPO"
 
+PROJECT_VERSION="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
+    | awk '/CURRENT_PROJECT_VERSION/ { print $3; exit }')"
+[ -n "$PROJECT_VERSION" ] || { echo "error: CURRENT_PROJECT_VERSION is not set" >&2; exit 1; }
+
+if [ "$VERSION" != "$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -showBuildSettings 2>/dev/null \
+    | awk '/MARKETING_VERSION/ { print $3; exit }')" ]; then
+    echo "error: MARKETING_VERSION must match $VERSION before releasing" >&2
+    exit 1
+fi
+
 if git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
     || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "error: $TAG already exists" >&2
     exit 1
 fi
-
-echo "Updating Xcode marketing version to $VERSION..."
-sed -i '' -E "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = $VERSION;/g" \
-    "$PROJECT_ROOT/macos/Flow.xcodeproj/project.pbxproj"
 
 rm -rf "$BUILD_DIR"
 xcodebuild -project "$PROJECT" \
@@ -144,6 +147,22 @@ spctl -a -vv "$APP"
 
 ditto -c -k --keepParent "$APP" "$ZIP_PATH"
 
+SPARKLE_BIN="$BUILD_DIR/SourcePackages/artifacts/sparkle/Sparkle/bin"
+GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast"
+[ -x "$GENERATE_APPCAST" ] || {
+    echo "error: Sparkle's generate_appcast tool was not resolved at $GENERATE_APPCAST" >&2
+    exit 1
+}
+
+UPDATES_DIR="$BUILD_DIR/updates"
+APPCAST_PATH="$BUILD_DIR/appcast.xml"
+mkdir -p "$UPDATES_DIR"
+cp "$ZIP_PATH" "$UPDATES_DIR/$(basename "$ZIP_PATH")"
+"$GENERATE_APPCAST" \
+    --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
+    -o "$APPCAST_PATH" \
+    "$UPDATES_DIR"
+
 NOTES_FILE="$BUILD_DIR/notes.md"
 cat > "$NOTES_FILE" <<EOF
 Flow $TAG for macOS
@@ -157,6 +176,7 @@ gh release create "$TAG" \
     --repo "$REPO" \
     --title "Flow $TAG (macOS)" \
     --notes-file "$NOTES_FILE" \
-    "$ZIP_PATH"
+    "$ZIP_PATH" \
+    "$APPCAST_PATH"
 
 echo "Published $TAG: https://github.com/$REPO/releases/tag/$TAG"

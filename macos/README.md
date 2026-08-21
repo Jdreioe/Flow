@@ -25,6 +25,19 @@ xcodebuild -project macos/Flow.xcodeproj \
 The built application is at
 `/tmp/flow-derived-data/Build/Products/Debug/Flow.app`.
 
+## Updates
+
+Flow uses Sparkle for signed macOS updates. The feed is attached to the latest
+GitHub release as `appcast.xml`, and each release archive is signed with the
+EdDSA key stored in the release machine's login Keychain. Only the matching
+public key is included in `Flow.app`.
+
+Generate the key once, from Sparkle's `bin/generate_keys` tool. Do not export
+or commit the private key. `scripts/release-macos.sh` builds the app, notarizes
+it, creates the signed appcast, and uploads both the ZIP and `appcast.xml`.
+Before each release, increment `CURRENT_PROJECT_VERSION` and set
+`MARKETING_VERSION` to the release version in the Xcode project.
+
 ## First use
 
 1. Open Flow from the build product or Xcode.

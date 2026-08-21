@@ -10,6 +10,10 @@
 		F10000000000000000000001 /* Flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Flow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXBuildFile section */
+		F10000000000000000000040 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = F10000000000000000000041 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		F10000000000000000000002 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -29,6 +33,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F10000000000000000000040 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -69,6 +74,9 @@
 			fileSystemSynchronizedGroups = (
 				F10000000000000000000003 /* Flow */,
 			);
+			packageProductDependencies = (
+				F10000000000000000000041 /* Sparkle */,
+			);
 			name = Flow;
 			productName = Flow;
 			productReference = F10000000000000000000001 /* Flow.app */;
@@ -101,6 +109,9 @@
 			productRefGroup = F10000000000000000000005 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			targets = (
 				F10000000000000000000010 /* Flow */,
 			);
@@ -127,6 +138,25 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F10000000000000000000041 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
+
 /* Begin XCBuildConfiguration section */
 		F10000000000000000000030 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -152,13 +182,13 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9BB3E6JDX4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Flow/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2;
+				MARKETING_VERSION = 0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hojmoseit.flow;
 				PRODUCT_NAME = Flow;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -172,13 +202,13 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9BB3E6JDX4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Flow/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.2;
+				MARKETING_VERSION = 0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.hojmoseit.flow;
 				PRODUCT_NAME = Flow;
 				PROVISIONING_PROFILE_SPECIFIER = "";
