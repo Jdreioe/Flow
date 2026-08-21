@@ -90,6 +90,9 @@ struct FlowSettingsView: View {
                         Text(action.title).tag(action)
                     }
                 }
+                if model.settings.speechSource != .azure {
+                    Toggle("Highlight spoken words", isOn: $model.settings.wordHighlightingEnabled)
+                }
                 Stepper(
                     "Popup dismisses after \(Int(model.settings.popupDismissSeconds)) seconds",
                     value: $model.settings.popupDismissSeconds,

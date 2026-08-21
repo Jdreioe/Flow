@@ -101,6 +101,7 @@ struct FlowSettings: Codable, Equatable {
     var speechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var popupDismissSeconds: Double = 8
     var sameSelectionAction: SameSelectionAction = .pauseResume
+    var wordHighlightingEnabled = false
     var azureVoiceName = "en-US-AvaMultilingualNeural"
     var azureSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var azureVoiceMode: AzureVoiceMode = .multilingual
@@ -113,7 +114,7 @@ struct FlowSettings: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction
+        case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction, wordHighlightingEnabled
         case azureVoiceName, azureSpeechRate, azureVoiceMode
         case googleVoiceName, googleSpeechRate
         case defaultLanguageTag, languageSwitchingEnabled, languageRoutes
@@ -129,6 +130,7 @@ struct FlowSettings: Codable, Equatable {
         speechRate = try values.decodeIfPresent(Float.self, forKey: .speechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         popupDismissSeconds = try values.decodeIfPresent(Double.self, forKey: .popupDismissSeconds) ?? 8
         sameSelectionAction = try values.decodeIfPresent(SameSelectionAction.self, forKey: .sameSelectionAction) ?? .pauseResume
+        wordHighlightingEnabled = try values.decodeIfPresent(Bool.self, forKey: .wordHighlightingEnabled) ?? false
         azureVoiceName = try values.decodeIfPresent(String.self, forKey: .azureVoiceName) ?? "en-US-AvaMultilingualNeural"
         azureSpeechRate = try values.decodeIfPresent(Float.self, forKey: .azureSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         azureVoiceMode = try values.decodeIfPresent(AzureVoiceMode.self, forKey: .azureVoiceMode) ?? .multilingual

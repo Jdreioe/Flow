@@ -55,9 +55,13 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
 
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
+    var onWordRange: ((Range<Int>?) -> Void)?
     private var player: AVAudioPlayer?
-    private var audioQueue: [Data] = []
+    private var audioQueue: [AudioSegment] = []
     private var synthesisTask: Task<Void, Never>?
+    private var wordTimer: Timer?
+    private var activeWordTimings: [WordTiming] = []
+    private var activeWordIndex: Int?
 
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         stop()
@@ -67,7 +71,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         }
         synthesisTask = Task { [weak self] in
             do {
-                let audio = try await Self.synthesize(plan: plan, apiKey: apiKey)
+                let audio = try await Self.synthesize(plan: plan, apiKey: apiKey, includeWordTimings: settings.wordHighlightingEnabled)
                 try Task.checkCancellation()
                 await MainActor.run { self?.play(audio) }
             } catch is CancellationError {
@@ -87,9 +91,14 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         player?.stop()
         player = nil
         audioQueue = []
+        wordTimer?.invalidate()
+        wordTimer = nil
+        activeWordTimings = []
+        activeWordIndex = nil
+        onWordRange?(nil)
     }
 
-    private func play(_ audio: [Data]) {
+    private func play(_ audio: [AudioSegment]) {
         audioQueue = audio
         playNextSegment()
     }
@@ -101,9 +110,17 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             return
         }
         do {
-            let player = try AVAudioPlayer(data: audioQueue.removeFirst())
+            let segment = audioQueue.removeFirst()
+            let player = try AVAudioPlayer(data: segment.data)
             player.delegate = self
             self.player = player
+            activeWordTimings = segment.wordTimings
+            activeWordIndex = nil
+            updateWordHighlight()
+            wordTimer?.invalidate()
+            wordTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.updateWordHighlight()
+            }
             guard player.play() else { throw CocoaError(.fileReadCorruptFile) }
         } catch {
             audioQueue = []
@@ -115,8 +132,9 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         let input: Input
         let voice: Voice
         let audioConfig: AudioConfig
+        let enableTimePointing: [String]?
 
-        struct Input: Encodable { let text: String }
+        struct Input: Encodable { let ssml: String }
         struct Voice: Encodable {
             let languageCode: String
             let name: String?
@@ -129,22 +147,42 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
 
     private struct SynthesisResponse: Decodable {
         let audioContent: String
+        let timepoints: [Timepoint]?
+
+        struct Timepoint: Decodable {
+            let markName: String
+            let timeSeconds: Double
+        }
     }
 
-    private static func synthesize(plan: LanguageFlow.Plan, apiKey: String) async throws -> [Data] {
-        var audio: [Data] = []
+    private struct WordTiming {
+        let timeSeconds: Double
+        let range: Range<Int>
+    }
+
+    private struct AudioSegment {
+        let data: Data
+        let wordTimings: [WordTiming]
+    }
+
+    private static func synthesize(plan: LanguageFlow.Plan, apiKey: String, includeWordTimings: Bool) async throws -> [AudioSegment] {
+        var audio: [AudioSegment] = []
+        var sentenceOffset = 0
         for sentence in plan.sentences {
             for chunk in textChunks(sentence.text) {
                 try Task.checkCancellation()
+                let marked = markedSSML(chunk.text)
                 let requestBody = SynthesisRequest(
-                    input: .init(text: chunk),
+                    input: .init(ssml: marked.ssml),
                     voice: .init(
                         languageCode: sentence.route.languageTag,
                         name: sentence.route.googleVoiceName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
                     ),
-                    audioConfig: .init(speakingRate: googleSpeakingRate(sentence.route.googleSpeechRate))
+                    audioConfig: .init(speakingRate: googleSpeakingRate(sentence.route.googleSpeechRate)),
+                    enableTimePointing: includeWordTimings ? ["SSML_MARK"] : nil
                 )
-                var request = URLRequest(url: URL(string: "https://texttospeech.googleapis.com/v1/text:synthesize")!)
+                let apiVersion = includeWordTimings ? "v1beta1" : "v1"
+                var request = URLRequest(url: URL(string: "https://texttospeech.googleapis.com/\(apiVersion)/text:synthesize")!)
                 request.httpMethod = "POST"
                 request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
                 request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
@@ -154,12 +192,23 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
                 guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
                     throw URLError(.badServerResponse)
                 }
-                let encoded = try JSONDecoder().decode(SynthesisResponse.self, from: data).audioContent
+                let responseBody = try JSONDecoder().decode(SynthesisResponse.self, from: data)
+                let encoded = responseBody.audioContent
                 guard let segment = Data(base64Encoded: encoded), !segment.isEmpty else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
-                audio.append(segment)
+                let timepoints = responseBody.timepoints ?? []
+                let wordTimings = timepoints.compactMap { timepoint -> WordTiming? in
+                    guard let index = Int(timepoint.markName.dropFirst(5)), marked.ranges.indices.contains(index) else { return nil }
+                    let range = marked.ranges[index]
+                    return WordTiming(
+                        timeSeconds: timepoint.timeSeconds,
+                        range: (sentenceOffset + chunk.offset + range.lowerBound)..<(sentenceOffset + chunk.offset + range.upperBound)
+                    )
+                }.sorted { $0.timeSeconds < $1.timeSeconds }
+                audio.append(.init(data: segment, wordTimings: wordTimings))
             }
+            sentenceOffset += sentence.text.utf16.count + 1
         }
         guard !audio.isEmpty else { throw URLError(.zeroByteResource) }
         return audio
@@ -173,9 +222,10 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         return abs(speakingRate - 1) > Float.ulpOfOne ? speakingRate : nil
     }
 
-    private static func textChunks(_ text: String) -> [String] {
+    private static func textChunks(_ text: String) -> [(text: String, offset: Int)] {
         var remaining = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        var chunks: [String] = []
+        var chunks: [(text: String, offset: Int)] = []
+        var offset = text.utf16.count - remaining.utf16.count
         while remaining.utf8.count > maximumInputBytes {
             var end = remaining.startIndex
             var byteCount = 0
@@ -189,15 +239,59 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
                 end = next
             }
             let split = lastWhitespace ?? end
-            chunks.append(String(remaining[..<split]).trimmingCharacters(in: .whitespacesAndNewlines))
-            remaining = String(remaining[split...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let chunk = String(remaining[..<split]).trimmingCharacters(in: .whitespacesAndNewlines)
+            chunks.append((chunk, offset))
+            let consumed = String(remaining[..<split])
+            remaining = String(remaining[split...])
+            offset += consumed.utf16.count
+            let trimmed = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
+            offset += remaining.utf16.count - trimmed.utf16.count
+            remaining = trimmed
         }
-        if !remaining.isEmpty { chunks.append(remaining) }
+        if !remaining.isEmpty { chunks.append((remaining, offset)) }
         return chunks
+    }
+
+    private static func markedSSML(_ text: String) -> (ssml: String, ranges: [Range<Int>]) {
+        var ssml = "<speak>"
+        var ranges: [Range<Int>] = []
+        var wordStart: Int?
+        var utf16Offset = 0
+        for character in text {
+            if character.isWhitespace {
+                if let start = wordStart {
+                    ranges.append(start..<utf16Offset)
+                    wordStart = nil
+                }
+            } else if wordStart == nil {
+                wordStart = utf16Offset
+                ssml += "<mark name=\"word_\(ranges.count)\"/>"
+            }
+            switch character {
+            case "&": ssml += "&amp;"
+            case "<": ssml += "&lt;"
+            case ">": ssml += "&gt;"
+            default: ssml.append(character)
+            }
+            utf16Offset += String(character).utf16.count
+        }
+        if let start = wordStart { ranges.append(start..<utf16Offset) }
+        return (ssml + "</speak>", ranges)
+    }
+
+    private func updateWordHighlight() {
+        guard let player else { return }
+        let index = activeWordTimings.lastIndex { $0.timeSeconds <= player.currentTime }
+        guard index != activeWordIndex else { return }
+        activeWordIndex = index
+        onWordRange?(index.map { activeWordTimings[$0].range })
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         if flag {
+            wordTimer?.invalidate()
+            wordTimer = nil
+            onWordRange?(nil)
             playNextSegment()
         } else {
             audioQueue = []

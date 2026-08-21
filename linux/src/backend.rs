@@ -77,6 +77,8 @@ pub struct FlowBackend {
     popup_visible_changed: qt_signal!(),
     message: qt_property!(QString; NOTIFY message_changed),
     message_changed: qt_signal!(),
+    playback_text: qt_property!(QString; NOTIFY playback_text_changed),
+    playback_text_changed: qt_signal!(),
     snapshot_json: qt_property!(QString; NOTIFY snapshot_json_changed),
     snapshot_json_changed: qt_signal!(),
     detected_languages_json: qt_property!(QString; NOTIFY detected_languages_json_changed),
@@ -94,7 +96,7 @@ pub struct FlowBackend {
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
 
-    play_cloud: qt_signal!(file_url: QString),
+    play_cloud: qt_signal!(file_url: QString, word_timings_json: QString),
     pause_playback: qt_signal!(),
     resume_playback: qt_signal!(),
     stop_audio: qt_signal!(),
@@ -342,6 +344,7 @@ pub struct FlowBackend {
     settings: Settings,
     playback_state: PlaybackState,
     selected_text: String,
+    playback_text: QString,
     plan: Option<Plan>,
     text_language_override: Option<String>,
     override_needs_route: bool,
@@ -351,6 +354,7 @@ pub struct FlowBackend {
     google_voices: Vec<GoogleVoice>,
     audio_path: Option<TempPath>,
     queued_audio_paths: VecDeque<TempPath>,
+    queued_word_timings: VecDeque<Vec<google::WordTiming>>,
     shortcut_commands: Option<mpsc::UnboundedSender<shortcuts::Command>>,
     system_speech_commands: Option<std::sync::mpsc::Sender<system_speech::Command>>,
     services_started: bool,
@@ -377,6 +381,8 @@ impl Default for FlowBackend {
             popup_visible_changed: Default::default(),
             message: QString::default(),
             message_changed: Default::default(),
+            playback_text: QString::default(),
+            playback_text_changed: Default::default(),
             snapshot_json: snapshot_json.into(),
             snapshot_json_changed: Default::default(),
             detected_languages_json: "[]".into(),
@@ -422,6 +428,7 @@ impl Default for FlowBackend {
             settings,
             playback_state: PlaybackState::Hidden,
             selected_text: String::new(),
+            playback_text: QString::default(),
             plan: None,
             text_language_override: None,
             override_needs_route: false,
@@ -432,6 +439,7 @@ impl Default for FlowBackend {
             google_voices: Vec::new(),
             audio_path: None,
             queued_audio_paths: VecDeque::new(),
+            queued_word_timings: VecDeque::new(),
             shortcut_commands: None,
             system_speech_commands: None,
             services_started: false,
@@ -603,6 +611,8 @@ impl FlowBackend {
         self.cancel_dismiss();
         self.stop_active_playback();
         self.selected_text = text;
+        self.playback_text = plan.sentences.iter().map(|sentence| sentence.text.as_str()).collect::<Vec<_>>().join(" ").into();
+        self.playback_text_changed();
         self.plan = Some(plan);
         self.manual_route_needed = true;
         self.manual_route_needed_changed();
@@ -654,6 +664,14 @@ impl FlowBackend {
             self.manual_route_needed_changed();
         }
         self.selected_text = text;
+        self.playback_text = plan
+            .sentences
+            .iter()
+            .map(|sentence| sentence.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .into();
+        self.playback_text_changed();
         self.plan = Some(plan.clone());
         self.refresh_detected_languages();
         self.set_state(PlaybackState::Preparing);
@@ -685,7 +703,7 @@ impl FlowBackend {
         let settings = self.settings.clone();
         let current_generation = Arc::clone(&self.playback_generation);
         let pointer = QPointer::from(&*self);
-        let deliver = queued_callback(move |result: Result<Vec<Vec<u8>>, String>| {
+        let deliver = queued_callback(move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>)>, String>| {
             if current_generation.load(Ordering::SeqCst) != generation {
                 return;
             }
@@ -700,7 +718,7 @@ impl FlowBackend {
         std::thread::spawn(move || {
             let result = azure::load_key()
                 .and_then(|key| azure::synthesize(&endpoint, &key, &plan, &settings))
-                .map(|audio| vec![audio])
+                .map(|audio| vec![(audio, Vec::new())])
                 .map_err(|_| {
                     "Azure could not synthesize this selection. Check the endpoint, key, and voice."
                         .to_owned()
@@ -715,8 +733,9 @@ impl FlowBackend {
             return;
         }
         let current_generation = Arc::clone(&self.playback_generation);
+        let settings = self.settings.clone();
         let pointer = QPointer::from(&*self);
-        let deliver = queued_callback(move |result: Result<Vec<Vec<u8>>, String>| {
+        let deliver = queued_callback(move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>)>, String>| {
             if current_generation.load(Ordering::SeqCst) != generation {
                 return;
             }
@@ -730,7 +749,8 @@ impl FlowBackend {
         });
         std::thread::spawn(move || {
             let result = google::load_key()
-                .and_then(|key| google::synthesize(&key, &plan))
+                .and_then(|key| google::synthesize(&key, &plan, settings.word_highlighting_enabled))
+                .map(|segments| segments.into_iter().map(|segment| (segment.audio, segment.word_timings)).collect())
                 .map_err(|_| {
                     "Google Cloud could not synthesize this selection. Check the API key and voice."
                         .to_owned()
@@ -739,23 +759,25 @@ impl FlowBackend {
         });
     }
 
-    fn play_cloud_audio(&mut self, audio_segments: Vec<Vec<u8>>) {
+    fn play_cloud_audio(&mut self, audio_segments: Vec<(Vec<u8>, Vec<google::WordTiming>)>) {
         let result = audio_segments
             .into_iter()
-            .map(|audio| {
+            .map(|(audio, timings)| {
                 tempfile::Builder::new()
                     .prefix("flow-")
                     .suffix(".mp3")
                     .tempfile()
                     .and_then(|mut file| {
                         file.write_all(&audio)?;
-                        Ok(file.into_temp_path())
+                        Ok((file.into_temp_path(), timings))
                     })
             })
-            .collect::<Result<VecDeque<_>, _>>();
+            .collect::<Result<Vec<_>, _>>();
         match result {
             Ok(paths) if !paths.is_empty() => {
-                self.queued_audio_paths = paths;
+                let (audio_paths, word_timings): (VecDeque<_>, VecDeque<_>) = paths.into_iter().unzip();
+                self.queued_audio_paths = audio_paths;
+                self.queued_word_timings = word_timings;
                 self.play_next_cloud_segment();
             }
             _ => self
@@ -767,8 +789,10 @@ impl FlowBackend {
         self.audio_path = self.queued_audio_paths.pop_front();
         if let Some(path) = &self.audio_path {
             let url = format!("file://{}", path.display());
+            let timings = self.queued_word_timings.pop_front().unwrap_or_default();
+            let timings_json = serde_json::to_string(&timings).unwrap_or_else(|_| "[]".into());
             self.set_state(PlaybackState::Playing);
-            self.play_cloud(url.into());
+            self.play_cloud(url.into(), timings_json.into());
         } else {
             self.finish_reading();
         }
@@ -962,6 +986,7 @@ impl FlowBackend {
                     SameSelectionAction::PauseResume
                 };
             }
+            "wordHighlightingEnabled" => self.settings.word_highlighting_enabled = value == "true",
             "azureVoiceName" => self.settings.azure_voice_name = value.into(),
             "azureSpeechRate" => {
                 if let Ok(rate) = value.parse::<f64>() {

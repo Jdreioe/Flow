@@ -78,6 +78,7 @@ final class FlowModel: ObservableObject {
 
     @Published private(set) var state: PlaybackState = .hidden
     @Published private(set) var selectedText = ""
+    @Published private(set) var currentWordRange: Range<Int>?
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var azureEndpoint: String?
     @Published private(set) var azureVoices: [AzureVoiceCatalog.Voice] = []
@@ -123,6 +124,9 @@ final class FlowModel: ObservableObject {
             }
         }
         systemSpeech.onFinished = finished
+        systemSpeech.onWordRange = { [weak self] range in
+            Task { @MainActor in self?.currentWordRange = range }
+        }
         azureSpeech.onFinished = finished
         azureSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
@@ -130,6 +134,9 @@ final class FlowModel: ObservableObject {
         googleSpeech.onFinished = finished
         googleSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
+        }
+        googleSpeech.onWordRange = { [weak self] range in
+            Task { @MainActor in self?.currentWordRange = range }
         }
         saveSettings()
         refreshAzureVoices()
@@ -167,6 +174,7 @@ final class FlowModel: ObservableObject {
         let plan = LanguageFlow.singleSentence(selectedText, settings: settings)
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
+        currentWordRange = nil
         activeSpeech = speech
         languagePlan = plan
         state = .preparing
@@ -191,6 +199,7 @@ final class FlowModel: ObservableObject {
     func stop() {
         dismissTask?.cancel()
         activeSpeech?.stop()
+        currentWordRange = nil
         selectedText = ""
         languagePlan = nil
         state = .hidden
@@ -330,7 +339,10 @@ final class FlowModel: ObservableObject {
         activeSpeech?.stop()
         manualRouteNeeded = false
         activeSpeech = speech
-        selectedText = text
+        selectedText = settings.wordHighlightingEnabled
+            ? plan.sentences.map(\.text).joined(separator: " ")
+            : text
+        currentWordRange = nil
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
@@ -340,6 +352,7 @@ final class FlowModel: ObservableObject {
 
     private func showMessage(_ message: String) {
         selectedText = ""
+        currentWordRange = nil
         languagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
@@ -349,6 +362,7 @@ final class FlowModel: ObservableObject {
     private func finishedReading() {
         guard state == .playing || state == .paused else { return }
         state = .finished
+        currentWordRange = nil
         dismissAfterDelay()
     }
 

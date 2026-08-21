@@ -17,6 +17,22 @@ ApplicationWindow {
     property var settings: snapshot.settings
     property var detectedLanguages: JSON.parse(backend.detected_languages_json)
     property bool cloudActive: false
+    property var wordTimings: []
+    property int currentWordStart: -1
+    property int currentWordEnd: -1
+
+    function escapedHtml(value) {
+        return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    }
+
+    function highlightedText() {
+        const text = backend.playback_text
+        if (currentWordStart < 0 || currentWordEnd > text.length)
+            return escapedHtml(text)
+        return "<span style='color:#888'>" + escapedHtml(text.slice(0, currentWordStart))
+            + "</span><b>" + escapedHtml(text.slice(currentWordStart, currentWordEnd))
+            + "</b>" + escapedHtml(text.slice(currentWordEnd))
+    }
 
     function cloudPlayer() {
         return cloudPlayerLoader.item ? cloudPlayerLoader.item.player : null
@@ -119,7 +135,7 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onPlay_cloud(fileUrl) {
+        function onPlay_cloud(fileUrl, wordTimingsJson) {
             cloudPlayerLoader.active = true
             let player = cloudPlayer()
             if (!player) {
@@ -127,6 +143,9 @@ ApplicationWindow {
                 return
             }
             player.source = fileUrl
+            root.wordTimings = JSON.parse(wordTimingsJson)
+            root.currentWordStart = -1
+            root.currentWordEnd = -1
             cloudActive = true
             player.play()
         }
@@ -184,6 +203,24 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    Timer {
+        interval: 30
+        repeat: true
+        running: root.cloudActive
+        onTriggered: {
+            const player = root.cloudPlayer()
+            if (!player) return
+            const seconds = player.position / 1000
+            let active = null
+            for (let index = 0; index < root.wordTimings.length; ++index) {
+                if (root.wordTimings[index].timeSeconds <= seconds) active = root.wordTimings[index]
+                else break
+            }
+            root.currentWordStart = active ? active.start : -1
+            root.currentWordEnd = active ? active.end : -1
         }
     }
 
@@ -321,6 +358,17 @@ ApplicationWindow {
                     visible: backend.state === "preparing"
                     Layout.fillWidth: true
                     text: "Preparing speech…"
+                }
+
+                Label {
+                    visible: backend.state === "playing" || backend.state === "paused"
+                    Layout.fillWidth: true
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.RichText
+                    text: root.highlightedText()
+                    Accessible.name: "Selected text being read"
                 }
 
                 ComboBox {
@@ -513,6 +561,12 @@ ApplicationWindow {
                             valueRole: "value"
                             currentIndex: model.findIndex(function(item) { return item.value === settings.hotKey })
                             onActivated: backend.update_setting("hotKey", currentValue)
+                        }
+                        CheckBox {
+                            visible: settings.speechSource === "google"
+                            text: "Highlight spoken words"
+                            checked: settings.wordHighlightingEnabled
+                            onToggled: backend.update_setting("wordHighlightingEnabled", checked ? "true" : "false")
                         }
                         Label {
                             Layout.fillWidth: true

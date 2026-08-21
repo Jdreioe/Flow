@@ -57,6 +57,7 @@ enum AzureVoiceCatalog {
 final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine {
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
+    var onWordRange: ((Range<Int>?) -> Void)?
     private var player: AVAudioPlayer?
     private var synthesisTask: Task<Void, Never>?
 

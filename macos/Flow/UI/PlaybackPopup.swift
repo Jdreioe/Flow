@@ -90,7 +90,7 @@ struct PlaybackPopupView: View {
                 Text(message)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text(model.selectedText)
+                highlightedSelection
                     .lineLimit(4)
                     .textSelection(.enabled)
                     .accessibilityLabel("Selected text being read")
@@ -150,6 +150,22 @@ struct PlaybackPopupView: View {
         case .message: "Flow"
         case .hidden: "Flow"
         }
+    }
+
+    private var highlightedSelection: Text {
+        guard let range = model.currentWordRange,
+              range.lowerBound >= 0,
+              range.upperBound <= model.selectedText.utf16.count else {
+            return Text(model.selectedText)
+        }
+        let start = String.Index(utf16Offset: range.lowerBound, in: model.selectedText)
+        let end = String.Index(utf16Offset: range.upperBound, in: model.selectedText)
+        let prefix = String(model.selectedText[..<start])
+        let word = String(model.selectedText[start..<end])
+        let suffix = String(model.selectedText[end...])
+        return Text(prefix).foregroundStyle(.secondary)
+            + Text(word).foregroundStyle(.tint).bold()
+            + Text(suffix).foregroundStyle(.primary)
     }
 }
 

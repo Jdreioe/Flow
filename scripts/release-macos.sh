@@ -55,8 +55,23 @@ MARKETING_VERSION_COUNT="$(awk '/MARKETING_VERSION = [0-9][0-9.]*/ { count++ } E
     echo "error: expected two MARKETING_VERSION settings, found $MARKETING_VERSION_COUNT" >&2
     exit 1
 }
+CURRENT_PROJECT_VERSION_COUNT="$(awk '/CURRENT_PROJECT_VERSION = [0-9]+;/ { count++ } END { print count + 0 }' "$PROJECT_FILE")"
+[ "$CURRENT_PROJECT_VERSION_COUNT" -eq 2 ] || {
+    echo "error: expected two CURRENT_PROJECT_VERSION settings, found $CURRENT_PROJECT_VERSION_COUNT" >&2
+    exit 1
+}
+CURRENT_PROJECT_VERSION="$(awk '/CURRENT_PROJECT_VERSION = [0-9]+;/ { print $3; exit }' "$PROJECT_FILE" | tr -d ';')"
+case "$CURRENT_PROJECT_VERSION" in
+    ''|*[!0-9]*)
+        echo "error: CURRENT_PROJECT_VERSION must be an integer, found: $CURRENT_PROJECT_VERSION" >&2
+        exit 1
+        ;;
+esac
+NEXT_PROJECT_VERSION="$((CURRENT_PROJECT_VERSION + 1))"
 echo "Updating Xcode marketing version to $VERSION..."
 sed -i '' -E "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = $VERSION;/g" "$PROJECT_FILE"
+echo "Updating Sparkle build version to $NEXT_PROJECT_VERSION..."
+sed -i '' -E "s/CURRENT_PROJECT_VERSION = [0-9]+;/CURRENT_PROJECT_VERSION = $NEXT_PROJECT_VERSION;/g" "$PROJECT_FILE"
 
 rm -rf "$BUILD_DIR"
 xcodebuild -project "$PROJECT" \

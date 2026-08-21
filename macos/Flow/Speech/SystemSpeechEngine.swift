@@ -8,8 +8,11 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     }
 
     var onFinished: (() -> Void)?
+    var onWordRange: ((Range<Int>?) -> Void)?
     private let synthesizer = AVSpeechSynthesizer()
     private var queuedUtterances = 0
+    private var utteranceOffsets: [ObjectIdentifier: Int] = [:]
+    private var highlightsWords = false
 
     override init() {
         super.init()
@@ -40,11 +43,16 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     func read(_ plan: LanguageFlow.Plan, settings: FlowSettings) {
         synthesizer.stopSpeaking(at: .immediate)
         queuedUtterances = plan.sentences.count
+        utteranceOffsets = [:]
+        highlightsWords = settings.wordHighlightingEnabled
+        var offset = 0
         for sentence in plan.sentences {
             let utterance = AVSpeechUtterance(string: sentence.text)
             utterance.voice = sentence.route.systemVoiceIdentifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
                 ?? SystemSpeechEngine.defaultVoice(for: sentence.route.languageTag)
             utterance.rate = sentence.route.systemSpeechRate
+            utteranceOffsets[ObjectIdentifier(utterance)] = offset
+            offset += sentence.text.utf16.count + 1
             synthesizer.speak(utterance)
         }
     }
@@ -59,10 +67,23 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
 
     func stop() {
         queuedUtterances = 0
+        utteranceOffsets = [:]
+        onWordRange?(nil)
         synthesizer.stopSpeaking(at: .immediate)
     }
 
+    func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        willSpeakRangeOfSpeechString characterRange: NSRange,
+        utterance: AVSpeechUtterance,
+    ) {
+        guard highlightsWords,
+              let offset = utteranceOffsets[ObjectIdentifier(utterance)] else { return }
+        onWordRange?((offset + characterRange.location)..<(offset + characterRange.location + characterRange.length))
+    }
+
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        utteranceOffsets.removeValue(forKey: ObjectIdentifier(utterance))
         queuedUtterances -= 1
         if queuedUtterances == 0 { onFinished?() }
     }

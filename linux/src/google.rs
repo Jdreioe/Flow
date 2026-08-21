@@ -1,4 +1,4 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use keyring::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -7,6 +7,7 @@ use thiserror::Error;
 use flow_core::language::Plan;
 
 const API_ROOT: &str = "https://texttospeech.googleapis.com/v1";
+const TIMEPOINT_API_ROOT: &str = "https://texttospeech.googleapis.com/v1beta1";
 const KEYRING_SERVICE: &str = "io.github.jdreioe.flow.google-cloud-tts";
 const KEYRING_ACCOUNT: &str = "byok";
 // Google limits synchronous text input to 5,000 bytes. Leave room for future
@@ -42,11 +43,15 @@ struct SynthesisRequest<'a> {
     input: SynthesisInput<'a>,
     voice: VoiceSelection<'a>,
     audio_config: AudioConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_time_pointing: Option<[&'static str; 1]>,
 }
 
 #[derive(Serialize)]
 struct SynthesisInput<'a> {
-    text: &'a str,
+    ssml: String,
+    #[serde(skip)]
+    marker: std::marker::PhantomData<&'a ()>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +74,28 @@ struct AudioConfig {
 #[serde(rename_all = "camelCase")]
 struct SynthesisResponse {
     audio_content: String,
+    #[serde(default)]
+    timepoints: Vec<Timepoint>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Timepoint {
+    mark_name: String,
+    time_seconds: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordTiming {
+    pub time_seconds: f64,
+    pub start: usize,
+    pub end: usize,
+}
+
+pub struct AudioSegment {
+    pub audio: Vec<u8>,
+    pub word_timings: Vec<WordTiming>,
 }
 
 pub fn validate_key(raw: &str) -> Result<String, GoogleError> {
@@ -114,9 +141,14 @@ pub fn list_voices(key: &str) -> Result<Vec<GoogleVoice>, GoogleError> {
     Ok(voices)
 }
 
-pub fn synthesize(key: &str, plan: &Plan) -> Result<Vec<Vec<u8>>, GoogleError> {
+pub fn synthesize(
+    key: &str,
+    plan: &Plan,
+    include_word_timings: bool,
+) -> Result<Vec<AudioSegment>, GoogleError> {
     let client = client();
     let mut audio_segments = Vec::new();
+    let mut sentence_offset = 0;
     for sentence in &plan.sentences {
         let voice_name = sentence
             .route
@@ -125,8 +157,12 @@ pub fn synthesize(key: &str, plan: &Plan) -> Result<Vec<Vec<u8>>, GoogleError> {
             .map(str::trim)
             .filter(|name| !name.is_empty());
         for chunk in text_chunks(&sentence.text) {
+            let (ssml, ranges) = marked_ssml(chunk);
             let request = SynthesisRequest {
-                input: SynthesisInput { text: chunk },
+                input: SynthesisInput {
+                    ssml,
+                    marker: std::marker::PhantomData,
+                },
                 voice: VoiceSelection {
                     language_code: &sentence.route.language_tag,
                     name: voice_name,
@@ -136,9 +172,17 @@ pub fn synthesize(key: &str, plan: &Plan) -> Result<Vec<Vec<u8>>, GoogleError> {
                     speaking_rate: (sentence.route.google_speech_rate.abs() > f64::EPSILON)
                         .then(|| google_rate(sentence.route.google_speech_rate)),
                 },
+                enable_time_pointing: include_word_timings.then_some(["SSML_MARK"]),
             };
             let response = client
-                .post(format!("{API_ROOT}/text:synthesize"))
+                .post(format!(
+                    "{}/text:synthesize",
+                    if include_word_timings {
+                        TIMEPOINT_API_ROOT
+                    } else {
+                        API_ROOT
+                    }
+                ))
                 .header("x-goog-api-key", key)
                 .header("User-Agent", "Flow")
                 .json(&request)
@@ -148,14 +192,38 @@ pub fn synthesize(key: &str, plan: &Plan) -> Result<Vec<Vec<u8>>, GoogleError> {
                 .map_err(|_| GoogleError::Request)?
                 .json::<SynthesisResponse>()
                 .map_err(|_| GoogleError::Request)?;
+            let SynthesisResponse {
+                audio_content,
+                timepoints,
+            } = response;
             let audio = STANDARD
-                .decode(response.audio_content)
+                .decode(audio_content)
                 .map_err(|_| GoogleError::Request)?;
             if audio.is_empty() {
                 return Err(GoogleError::Request);
             }
-            audio_segments.push(audio);
+            let word_timings = timepoints
+                .into_iter()
+                .filter_map(|point| {
+                    let index = point
+                        .mark_name
+                        .strip_prefix("word_")?
+                        .parse::<usize>()
+                        .ok()?;
+                    let range = ranges.get(index)?;
+                    Some(WordTiming {
+                        time_seconds: point.time_seconds,
+                        start: sentence_offset + range.start,
+                        end: sentence_offset + range.end,
+                    })
+                })
+                .collect();
+            audio_segments.push(AudioSegment {
+                audio,
+                word_timings,
+            });
         }
+        sentence_offset += sentence.text.encode_utf16().count() + 1;
     }
     if audio_segments.is_empty() {
         Err(GoogleError::Request)
@@ -190,6 +258,35 @@ fn text_chunks(text: &str) -> Vec<&str> {
         chunks.push(remaining);
     }
     chunks
+}
+
+fn marked_ssml(text: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let mut ssml = String::from("<speak>");
+    let mut ranges = Vec::new();
+    let mut word_start = None;
+    let mut utf16_offset = 0;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            if let Some(start) = word_start.take() {
+                ranges.push(start..utf16_offset);
+            }
+        } else if word_start.is_none() {
+            word_start = Some(utf16_offset);
+            ssml.push_str(&format!("<mark name=\"word_{}\"/>", ranges.len()));
+        }
+        match character {
+            '&' => ssml.push_str("&amp;"),
+            '<' => ssml.push_str("&lt;"),
+            '>' => ssml.push_str("&gt;"),
+            _ => ssml.push(character),
+        }
+        utf16_offset += character.len_utf16();
+    }
+    if let Some(start) = word_start {
+        ranges.push(start..utf16_offset);
+    }
+    ssml.push_str("</speak>");
+    (ssml, ranges)
 }
 
 fn client() -> Client {
