@@ -6,13 +6,13 @@
 	objectVersion = 71;
 	objects = {
 
-/* Begin PBXFileReference section */
-		F10000000000000000000001 /* Flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Flow.app; sourceTree = BUILT_PRODUCTS_DIR; };
-/* End PBXFileReference section */
-
 /* Begin PBXBuildFile section */
 		F10000000000000000000040 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = F10000000000000000000041 /* Sparkle */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		F10000000000000000000001 /* Flow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Flow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		F10000000000000000000002 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
@@ -74,10 +74,10 @@
 			fileSystemSynchronizedGroups = (
 				F10000000000000000000003 /* Flow */,
 			);
+			name = Flow;
 			packageProductDependencies = (
 				F10000000000000000000041 /* Sparkle */,
 			);
-			name = Flow;
 			productName = Flow;
 			productReference = F10000000000000000000001 /* Flow.app */;
 			productType = "com.apple.product-type.application";
@@ -106,12 +106,12 @@
 				Base,
 			);
 			mainGroup = F10000000000000000000004;
-			productRefGroup = F10000000000000000000005 /* Products */;
-			projectDirPath = "";
-			projectRoot = "";
 			packageReferences = (
 				F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
+			productRefGroup = F10000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
 			targets = (
 				F10000000000000000000010 /* Flow */,
 			);
@@ -137,25 +137,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.9.6;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		F10000000000000000000041 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		F10000000000000000000030 /* Debug */ = {
@@ -238,6 +219,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		F10000000000000000000041 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F10000000000000000000042 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = F10000000000000000000020 /* Project object */;
 }
