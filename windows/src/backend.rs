@@ -624,9 +624,9 @@ impl FlowBackend {
         }
         self.cancel_dismiss();
         self.stop_active_playback();
-        self.selected_text = text;
         self.playback_text = playback_text(&plan, &text).into();
         self.playback_text_changed();
+        self.selected_text = text;
         self.plan = Some(plan);
         self.manual_route_needed = true;
         self.manual_route_needed_changed();
@@ -802,11 +802,17 @@ impl FlowBackend {
             .collect::<Result<Vec<_>, _>>();
         match result {
             Ok(paths) if !paths.is_empty() => {
-                let (audio_paths, rest): (VecDeque<_>, VecDeque<_>) = paths.into_iter().unzip();
-                let (word_timings, speeds): (VecDeque<_>, VecDeque<_>) = rest.into_iter().unzip();
+                let mut audio_paths = VecDeque::new();
+                let mut word_timings = VecDeque::new();
+                let mut segment_speeds = VecDeque::new();
+                for (path, timings, speed) in paths {
+                    audio_paths.push_back(path);
+                    word_timings.push_back(timings);
+                    segment_speeds.push_back(speed);
+                }
                 self.queued_audio_paths = audio_paths;
                 self.queued_word_timings = word_timings;
-                self.queued_segment_speeds = speeds;
+                self.queued_segment_speeds = segment_speeds;
                 self.play_next_cloud_segment();
             }
             _ => self
@@ -1262,6 +1268,12 @@ impl FlowBackend {
         })
         .into();
         self.snapshot_json_changed();
+    }
+
+    fn set_language_override(&mut self, value: Option<String>) {
+        self.language_override = value.clone();
+        self.text_language_override = value.unwrap_or_default().into();
+        self.text_language_override_changed();
     }
 
     fn set_state(&mut self, state: PlaybackState) {
