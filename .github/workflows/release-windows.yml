@@ -1,0 +1,73 @@
+name: Release Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release candidate version, e.g. 0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.0"
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Build flow-windows (release)
+        run: cargo build --release --locked --package flow-windows
+
+      - name: Package MSIX
+        env:
+          VERSION: ${{ inputs.version }}
+        run: scripts/package-msix.ps1
+
+      - name: Publish release candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v$env:VERSION"
+          $notes = @"
+          Flow $tag release candidate for Windows.
+
+          The package is signed with a self-signed certificate.
+          To install:
+          1. Import Flow-RC.cer into Local Machine > Trusted People.
+          2. Enable sideloading (Settings > Privacy & security > For developers).
+          3. Double-click the .msix to install.
+          "@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          gh release create "$tag" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --title "Flow $tag (Windows RC)" `
+            --prerelease `
+            --notes-file $notesPath `
+            "dist/Flow-$tag.msix" `
+            "dist/Flow-RC.cer"
