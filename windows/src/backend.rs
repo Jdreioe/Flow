@@ -96,6 +96,8 @@ pub struct FlowBackend {
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
+    tray_icon_url: qt_property!(QString; NOTIFY tray_icon_url_changed),
+    tray_icon_url_changed: qt_signal!(),
 
     play_cloud: qt_signal!(file_url: QString, word_timings_json: QString, rate: f64),
     segment_rate: qt_signal!(rate: f64),
@@ -395,6 +397,7 @@ impl Default for FlowBackend {
             azure_voices: &[],
             google_voices: &[],
         });
+        let playback_speed = settings.playback_speed;
         Self {
             base: Default::default(),
             state: PlaybackState::Hidden.id().into(),
@@ -421,6 +424,8 @@ impl Default for FlowBackend {
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
             configuration_error_changed: Default::default(),
+            tray_icon_url: tray_icon_url().into(),
+            tray_icon_url_changed: Default::default(),
             play_cloud: Default::default(),
             segment_rate: Default::default(),
             pause_playback: Default::default(),
@@ -449,6 +454,7 @@ impl Default for FlowBackend {
             refresh_google_voices: Default::default(),
             play_test_voice: Default::default(),
             set_playback_speed: Default::default(),
+            playback_speed_changed: Default::default(),
             settings,
             playback_state: PlaybackState::Hidden,
             selected_text: String::new(),
@@ -461,7 +467,7 @@ impl Default for FlowBackend {
             queued_audio_paths: VecDeque::new(),
             queued_word_timings: VecDeque::new(),
             queued_segment_speeds: VecDeque::new(),
-            playback_speed: settings.playback_speed,
+            playback_speed,
             shortcut_commands: None,
             system_speech_commands: None,
             services_started: false,
@@ -682,9 +688,9 @@ impl FlowBackend {
             self.playback_speed = self.settings.playback_speed;
             self.playback_speed_changed();
         }
-        self.selected_text = text;
         self.playback_text = playback_text(&plan, &text).into();
         self.playback_text_changed();
+        self.selected_text = text;
         self.plan = Some(plan.clone());
         self.refresh_detected_languages();
         self.set_state(PlaybackState::Preparing);
@@ -1311,6 +1317,32 @@ fn hot_key_title(preset: HotKeyPreset) -> &'static str {
         HotKeyPreset::AltSuperSpace => "Alt+Win+Space",
         HotKeyPreset::ControlAltR => "Ctrl+Alt+R",
     }
+}
+
+/// File URL of the bundled tray icon. Prefers an assets folder next to the
+/// executable (installed layout) and falls back to the repository layout so
+/// unpackaged development builds find it too.
+fn tray_icon_url() -> String {
+    let mut candidates = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .into_iter()
+        .flat_map(|dir| {
+            vec![
+                dir.join("assets").join("flow-32.png"),
+                dir.join("..")
+                    .join("..")
+                    .join("windows")
+                    .join("assets")
+                    .join("flow-32.png"),
+            ]
+        })
+        .chain(std::iter::once("windows/assets/flow-32.png".into()));
+    let icon = candidates
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| "flow-32.png".into());
+    let forwarded = icon.to_string_lossy().replace('\\', "/");
+    format!("file:///{}", forwarded.trim_start_matches('/')).replace(' ', "%20")
 }
 
 fn file_url(path: &std::path::Path) -> String {

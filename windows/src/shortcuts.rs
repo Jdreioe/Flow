@@ -3,14 +3,12 @@ use std::{
     time::Duration,
 };
 
-use windows::Win32::UI::{
-    Input::KeyboardAndMouse::{
-        HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, VIRTUAL_KEY,
-    },
-    WindowsAndMessaging::{
-        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, RegisterHotKey, TranslateMessage,
-        UnregisterHotKey, WM_HOTKEY,
-    },
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey,
+    UnregisterHotKey, VIRTUAL_KEY,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_HOTKEY,
 };
 
 use flow_core::model::HotKeyPreset;
@@ -40,7 +38,7 @@ pub fn run<A, S>(
     S: Fn(String) + Send + Sync + 'static,
 {
     loop {
-        match unsafe { register(preset) } {
+        match register(preset) {
             Ok(title) => (callbacks.status)(format!("Global shortcut: {title}")),
             Err(_) => (callbacks.status)(
                 "Flow could not register its global shortcut. The key combination may already be in use."
@@ -89,7 +87,7 @@ where
 
 fn register(preset: HotKeyPreset) -> Result<&'static str, ()> {
     let (modifiers, key) = binding(preset);
-    unsafe { RegisterHotKey(None, HOTKEY_ID, Some(modifiers), Some(key)) }
+    unsafe { RegisterHotKey(None, HOTKEY_ID, modifiers, key.0 as u32) }
         .is_ok()
         .then(|| title(preset))
         .ok_or(())

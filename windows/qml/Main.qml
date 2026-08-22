@@ -246,7 +246,7 @@ ApplicationWindow {
     Platform.SystemTrayIcon {
         id: tray
         visible: true
-        icon.name: "accessories-text-editor"
+        icon.source: backend.tray_icon_url
         tooltip: "Flow"
 
         onActivated: function(reason) {
@@ -417,7 +417,6 @@ ApplicationWindow {
                                 backend.set_playback_speed(speedSlider.value)
                         }
                         Accessible.name: qsTr("Playback speed")
-                        Accessible.value: Math.round(speedSlider.value * 100) + "%"
                     }
                     Label {
                         text: Number(backend.playback_speed.toFixed(2)).toString() + "×"

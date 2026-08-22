@@ -1,19 +1,12 @@
 use std::process;
 
 use thiserror::Error;
-use windows::{
-    Win32::{
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_APARTMENTTHREADED,
-        },
-        UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextRange,
-            UIA_TextPatternId,
-        },
-        System::Variant::{SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound, VARIANT, VT_DISPATCH},
+use windows::Win32::{
+    System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
     },
-    core::Interface,
+    UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId},
 };
 
 const MAXIMUM_ANCESTORS: usize = 8;
@@ -30,7 +23,7 @@ struct ComScope;
 
 impl ComScope {
     fn new() -> Self {
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); };
         ComScope
     }
 }
@@ -49,14 +42,14 @@ impl Drop for ComScope {
 /// a parent document element rather than the caret host.
 pub fn read_focused_selection() -> Result<String, SelectionError> {
     let _com = ComScope::new();
-    let automation: IUIAutomation = unsafe {
-        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-    }
-    .map_err(|_| SelectionError::Unavailable)?;
+    let automation: IUIAutomation =
+        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|_| SelectionError::Unavailable)?;
     let focused = unsafe { automation.GetFocusedElement() }
         .map_err(|_| SelectionError::Unavailable)?;
 
-    if unsafe { focused.CurrentProcessId() } == process::id() {
+    let owner = unsafe { focused.CurrentProcessId() }.map_err(|_| SelectionError::Unavailable)?;
+    if owner >= 0 && owner as u32 == process::id() {
         return Err(SelectionError::Unavailable);
     }
 
@@ -87,14 +80,12 @@ pub fn read_focused_selection() -> Result<String, SelectionError> {
 
 fn selected_text(pattern: &IUIAutomationTextPattern) -> Option<String> {
     let array = unsafe { pattern.GetSelection() }.ok()?;
-    let lower = unsafe { SafeArrayGetLBound(&array, 1) }.ok()?;
-    let upper = unsafe { SafeArrayGetUBound(&array, 1) }.ok()?;
-    for index in lower..=upper {
-        let mut item = VARIANT::default();
-        unsafe { SafeArrayGetElement(&array, &[index], &mut item as *mut VARIANT as *mut _) }
-            .ok()?;
-        let Some(range) = take_range(&item) else { continue };
-        let Ok(text) = (unsafe { range.GetText(-1) }).map(|bstr| bstr.to_string()) else {
+    let length = unsafe { array.Length() }.ok()?;
+    for index in 0..length {
+        let Ok(range) = (unsafe { array.GetElement(index) }) else {
+            continue;
+        };
+        let Ok(text) = (unsafe { range.GetText(-1) }).map(|value| value.to_string()) else {
             continue;
         };
         if !text.trim().is_empty() {
@@ -104,21 +95,14 @@ fn selected_text(pattern: &IUIAutomationTextPattern) -> Option<String> {
     None
 }
 
-/// Transfers the variant's IDispatch reference into a typed range interface.
-fn take_range(item: &VARIANT) -> Option<IUIAutomationTextRange> {
-    let raw = item.Anonymous.Anonymous;
-    if raw.vt != VT_DISPATCH || raw.pdispVal.is_null() {
-        return None;
-    }
-    let unknown: windows::core::IUnknown = unsafe { std::mem::transmute_copy(&raw.pdispVal) };
-    unknown.cast::<IUIAutomationTextRange>().ok()
-}
-
 fn truncate(text: &str) -> String {
-    flow_core::model::MAXIMUM_SELECTION_CHARACTERS
+    match flow_core::model::MAXIMUM_SELECTION_CHARACTERS
         .checked_sub(1)
-        .and_then(|limit| text.char_indices().nth(limit).map(|(index, _)| &text[..index]))
-        .unwrap_or(text.to_owned())
+        .and_then(|limit| text.char_indices().nth(limit).map(|(index, _)| index))
+    {
+        Some(index) => text[..index].to_owned(),
+        None => text.to_owned(),
+    }
 }
 
 pub fn debug_enabled() -> bool {

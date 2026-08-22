@@ -1,4 +1,4 @@
-use std::{
+﻿use std::{
     collections::VecDeque,
     sync::{
         Arc,
@@ -73,7 +73,7 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
             return;
         }
     };
-    (callbacks.voices_changed)(engine.voices.iter().map(|entry| entry.info.clone()).collect());
+    (callbacks.voices_changed)(visible_voices(&engine.voices));
 
     let mut playback: Option<Playback> = None;
     let mut segment_generation: Option<u64> = None;
@@ -81,7 +81,6 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
         match receiver.recv_timeout(WAIT_SLICE) {
             Ok(command) => match command {
                 Command::Play { generation, plan } => {
-                    segment_generation = None;
                     playback = Some(Playback {
                         generation,
                         sentences: plan.sentences.into(),
@@ -165,7 +164,7 @@ struct Engine {
 
 impl Engine {
     fn new() -> Result<Self, String> {
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); };
         let synthesizer = SpeechSynthesizer::new().map_err(speech_error)?;
         let player = MediaPlayer::new().map_err(speech_error)?;
         let ended = Arc::new(AtomicBool::new(false));
@@ -185,13 +184,11 @@ impl Engine {
             let name = native
                 .DisplayName()
                 .map_err(speech_error)?
-                .to_string_lossy()
-                .into_owned();
+                .to_string();
             let language_tag = native
                 .Language()
                 .map_err(speech_error)?
-                .to_string_lossy()
-                .into_owned();
+                .to_string();
             voices.push(VoiceEntry {
                 info: SystemVoice { name, language_tag },
                 native,
@@ -212,12 +209,10 @@ impl Engine {
             .synthesizer
             .SynthesizeTextToStreamAsync(&HSTRING::from(sentence.text.as_str()))
             .map_err(speech_error)?;
-        let stream: SpeechSynthesisStream = operation.get().map_err(speech_error)?;
-        let source = MediaSource::CreateFromStream(
-            &stream,
-            &HSTRING::from("audio/wav"),
-        )
-        .map_err(speech_error)?;
+        let stream: SpeechSynthesisStream = operation.join().map_err(speech_error)?;
+        let source =
+            MediaSource::CreateFromStream(&stream, &HSTRING::from("audio/wav"))
+                .map_err(speech_error)?;
         self.ended.store(false, Ordering::SeqCst);
         self.player.SetSource(&source).map_err(speech_error)?;
         self.player.Play().map_err(speech_error)
@@ -225,7 +220,8 @@ impl Engine {
 
     fn configure(&self, sentence: &Sentence) -> Result<(), String> {
         self.synthesizer
-            .SetRate(windows_rate(sentence.route.system_speech_rate))
+            .Options()
+            .and_then(|options| options.SetSpeakingRate(windows_rate(sentence.route.system_speech_rate)))
             .map_err(speech_error)?;
         let requested = sentence.route.language_tag.replace('_', "-");
         let selected = sentence
@@ -243,14 +239,15 @@ impl Engine {
                 })
             });
         if let Some(voice) = selected.or(default) {
-            self.synthesizer.SetVoice(&voice.native).map_err(speech_error)?;
+            self.synthesizer
+                .SetVoice(&voice.native)
+                .map_err(speech_error)?;
         }
         Ok(())
     }
 
     fn stop(&self) {
         let _ = self.player.Pause();
-        self.player.SetSource(None::<windows::Media::Core::IMediaPlaybackSource>).ok();
     }
 
     fn segment_ended(&self) -> bool {
@@ -270,7 +267,7 @@ impl Drop for Engine {
 }
 
 /// Flow rates span -1..1 like the other engines; Windows spans 0..3 where 1 is
-/// normal, so keep the same ±50 % convention used by Azure and Google.
+/// normal, so keep the same Â±50 % convention used by Azure and Google.
 fn windows_rate(rate: f64) -> f64 {
     1.0 + rate.clamp(-1.0, 1.0) * RATE_RANGE
 }
