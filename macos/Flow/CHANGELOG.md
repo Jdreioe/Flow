@@ -1,6 +1,6 @@
 # Flow changelog
 
-## 0.7
+## 0.7.1
 
 Voice selection stays readable and playback stays responsive.
 
