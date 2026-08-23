@@ -242,10 +242,10 @@ final class FlowModel: ObservableObject {
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
             showMessage("Flow needs Accessibility permission to read selected text.")
-        case .failure(.noSelectedText):
-            showMessage("Select some text, then press \(settings.hotKey.title).")
-        case .failure(.unavailable(let underlying)):
-            showMessage(Self.captureFailureMessage(underlying))
+        case .failure(.noSelectedText(let diagnostics)):
+            showMessage("Select some text, then press \(settings.hotKey.title). \(diagnostics)")
+        case .failure(.unavailable(let underlying, let diagnostics)):
+            showMessage("\(Self.captureFailureMessage(underlying)) \(diagnostics)")
         case .success(let text):
             let normalized = Self.normalized(text)
             if normalized.isEmpty {
