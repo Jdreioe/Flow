@@ -54,12 +54,21 @@ if ($crtDir) {
 $vpk = Join-Path "$env:USERPROFILE\.dotnet\tools" 'vpk.exe'
 if (-not (Test-Path -LiteralPath $vpk)) { $vpk = 'vpk' }
 
-& $vpk pack `
-    --packId Flow `
-    --packVersion $env:VERSION `
-    --packDir $staging `
-    --mainExe flow-windows.exe `
-    --outputDir (Join-Path $dist 'Releases')
+$packArgs = @(
+    'pack',
+    '--packId', 'Flow',
+    '--packVersion', $env:VERSION,
+    '--packDir', $staging,
+    '--mainExe', 'flow-windows.exe',
+    '--outputDir', (Join-Path $dist 'Releases')
+)
+# Optional code signing: set VPK_SIGNPARAMS to signtool arguments, e.g.
+#   VPK_SIGNPARAMS: /a /f cert.pfx /p <password> /fd SHA256 /tr <timestamp-url> /td SHA256
+if ($env:VPK_SIGNPARAMS) {
+    $packArgs += @('--signParams', $env:VPK_SIGNPARAMS)
+}
+
+& $vpk @packArgs
 if ($LASTEXITCODE -ne 0) { throw 'vpk pack failed' }
 
 Write-Host "Packaged Velopack release under $(Join-Path $dist 'Releases')"

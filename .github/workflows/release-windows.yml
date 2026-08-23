@@ -59,8 +59,11 @@ jobs:
           $notes = @"
           Flow $tag for Windows.
 
-          Install with the attached Flow-win-Setup.exe. Installed builds update
-          themselves from the tray menu (Check for Updates).
+          Install with the attached Flow-win-Setup.exe. No certificate import
+          or sideloading settings are needed. Windows may show a SmartScreen
+          notice on first run; choose "More info" and then "Run anyway".
+          Installed builds update themselves from the tray menu (Check for
+          Updates).
           "@
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
           Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8

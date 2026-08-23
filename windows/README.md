@@ -40,6 +40,11 @@ The first build compiles the Qt bridge and can take several minutes.
 
 ## Known gaps
 
+- The installer is unsigned, so Windows SmartScreen shows a one-time
+  "Windows protected your PC" notice; users choose "More info" > "Run anyway".
+  Signing is ready to enable via the `VPK_SIGNPARAMS` environment variable on
+  `scripts/package-velopack.ps1`.
+
 - The tray icon currently falls back to the system default glyph; shipping a
   Flow `.ico`/`.png` through a Qt resource file is still pending.
 - Selection capture relies on apps exposing UI Automation text patterns
