@@ -25,7 +25,17 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         synthesizer.delegate = self
     }
 
-    static var voices: [Voice] {
+    static var voices: [Voice] { cachedVoices }
+
+    private static var cachedVoices: [Voice] = buildVoiceList()
+
+    // Enumerating speechVoices() formats a localized name per voice and is
+    // far too slow to run on every SwiftUI render of the settings form.
+    static func reloadVoices() {
+        cachedVoices = buildVoiceList()
+    }
+
+    private static func buildVoiceList() -> [Voice] {
         AVSpeechSynthesisVoice.speechVoices()
             .filter(isListable)
             .map { voice in

@@ -126,6 +126,15 @@ private actor AccessibilityPreparationCoordinator {
     }
 }
 
+// Word-level progress changes many times per second during playback. Keeping
+// it out of FlowModel stops the settings window from re-rendering on every
+// highlight tick while only the playback popup observes this object.
+@MainActor
+final class PlaybackProgress: ObservableObject {
+    @Published var wordRange: Range<Int>?
+    @Published var readingOffset: Double?
+}
+
 @MainActor
 final class FlowModel: ObservableObject {
     enum PlaybackState: Equatable {
@@ -140,8 +149,7 @@ final class FlowModel: ObservableObject {
 
     @Published private(set) var state: PlaybackState = .hidden
     @Published private(set) var selectedText = ""
-    @Published private(set) var currentWordRange: Range<Int>?
-    @Published private(set) var currentReadingOffset: Double?
+    let progress = PlaybackProgress()
     var playbackSpeed: Float { settings.playbackSpeed }
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var azureEndpoint: String?
@@ -182,6 +190,7 @@ final class FlowModel: ObservableObject {
         var loadedSettings = FlowSettings.load()
         loadedSettings.ensureExplicitSystemVoices()
         settings = loadedSettings
+        SystemSpeechEngine.reloadVoices()
         accessibilityTrusted = AccessibilitySelectionReader.isTrusted
         azureEndpoint = AzureCredentialsStore.load()?.endpoint
         googleConfigured = GoogleCredentialsStore.load() != nil
@@ -192,7 +201,7 @@ final class FlowModel: ObservableObject {
         }
         systemSpeech.onFinished = finished
         systemSpeech.onWordRange = { [weak self] range in
-            Task { @MainActor in self?.currentWordRange = range }
+            Task { @MainActor in self?.progress.wordRange = range }
         }
         azureSpeech.onFinished = finished
         azureSpeech.onFailure = { [weak self] message in
@@ -203,10 +212,10 @@ final class FlowModel: ObservableObject {
             Task { @MainActor in self?.showMessage(message) }
         }
         googleSpeech.onWordRange = { [weak self] range in
-            Task { @MainActor in self?.currentWordRange = range }
+            Task { @MainActor in self?.progress.wordRange = range }
         }
         googleSpeech.onReadingOffset = { [weak self] offset in
-            Task { @MainActor in self?.currentReadingOffset = offset }
+            Task { @MainActor in self?.progress.readingOffset = offset }
         }
         saveSettings()
         refreshAzureVoices()
@@ -248,8 +257,8 @@ final class FlowModel: ObservableObject {
         let plan = LanguageFlow.singleSentence(selectedText, settings: settings)
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         activeSpeech = speech
         languagePlan = plan
         state = .preparing
@@ -313,8 +322,8 @@ final class FlowModel: ObservableObject {
         activeSpeech?.stop()
         previewTask?.cancel()
         previewPlayer?.stop()
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         selectedText = ""
         languagePlan = nil
         state = .hidden
@@ -462,8 +471,8 @@ final class FlowModel: ObservableObject {
         selectedText = settings.wordHighlightingEnabled
             ? LanguageFlow.playbackText(for: plan, sourceText: text)
             : text
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
@@ -473,8 +482,8 @@ final class FlowModel: ObservableObject {
 
     private func showMessage(_ message: String) {
         selectedText = ""
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         languagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
@@ -484,8 +493,8 @@ final class FlowModel: ObservableObject {
     private func finishedReading() {
         guard state == .playing || state == .paused else { return }
         state = .finished
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         dismissAfterDelay()
     }
 

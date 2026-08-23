@@ -22,7 +22,7 @@ final class PlaybackPopupController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.contentView = NSHostingView(rootView: PlaybackPopupView(model: model))
+        panel.contentView = NSHostingView(rootView: PlaybackPopupView(model: model, progress: model.progress))
     }
 
     func show() {
@@ -42,6 +42,7 @@ final class PlaybackPopupController {
 
 struct PlaybackPopupView: View {
     @ObservedObject var model: FlowModel
+    @ObservedObject var progress: PlaybackProgress
     @State private var showsLanguages = false
     @State private var pendingSpeed: Double?
 
@@ -209,13 +210,13 @@ struct PlaybackPopupView: View {
     }
 
     private var highlightedSelection: Text {
-        guard let range = model.currentWordRange,
+        guard let range = progress.wordRange,
               range.lowerBound >= 0,
               range.upperBound <= model.selectedText.utf16.count else {
             return Text(model.selectedText)
         }
         let readingOffset = min(
-            max(0, Int(model.currentReadingOffset ?? Double(range.lowerBound))),
+            max(0, Int(progress.readingOffset ?? Double(range.lowerBound))),
             model.selectedText.utf16.count)
         // Keep the spoken word just before the visual midpoint so the preview
         // advances early enough to show the words that are about to be read.
