@@ -4,7 +4,9 @@ import ApplicationServices
 enum AccessibilitySelectionError: Error {
     case permissionRequired
     case noSelectedText
-    case unavailable
+    /// Carries the last AXError macOS reported so failures can be diagnosed;
+    /// apps like Chromium intermittently time out (.cannotComplete).
+    case unavailable(AXError?)
 }
 
 enum AccessibilitySelectionReader {
@@ -20,14 +22,16 @@ enum AccessibilitySelectionReader {
 
         let system = AXUIElementCreateSystemWide()
         var focusedValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
+        let focusResult = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedValue)
+        guard focusResult == .success,
               let focusedValue,
               CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else {
-            return .failure(.unavailable)
+            return .failure(.unavailable(focusResult))
         }
 
         var element = unsafeBitCast(focusedValue, to: AXUIElement.self)
         var foundSelectedTextAttribute = false
+        var latestError: AXError?
 
         // Safari, Firefox, and Zen can focus a web-content child while keeping
         // the actual selection on its enclosing HTML/web area. Check that short
@@ -38,8 +42,8 @@ enum AccessibilitySelectionReader {
                 return .success(text)
             case .empty:
                 foundSelectedTextAttribute = true
-            case .unavailable:
-                break
+            case .unavailable(let error):
+                latestError = error
             }
 
             var parentValue: CFTypeRef?
@@ -54,29 +58,38 @@ enum AccessibilitySelectionReader {
             }
             element = unsafeBitCast(parentValue, to: AXUIElement.self)
         }
-        if let text = selectionInFrontmostApplication() {
+        if let text = selectionInFrontmostApplication(latestError: &latestError) {
             return .success(text)
         }
-        return .failure(foundSelectedTextAttribute ? .noSelectedText : .unavailable)
+        return .failure(foundSelectedTextAttribute ? .noSelectedText : .unavailable(latestError))
     }
 
     /// Browsers may expose a selected range on a web-area sibling instead of
     /// the focused element's parent chain. This visits accessibility elements
     /// only and asks only for their selected text, never page text or clipboard
     /// data. The bound keeps a malformed accessibility tree from slowing Flow.
-    private static func selectionInFrontmostApplication() -> String? {
+    private static func selectionInFrontmostApplication(latestError: inout AXError?) -> String? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let root = AXUIElementCreateApplication(pid_t(app.processIdentifier))
         var remainingElements = 600
-        return selectedText(in: root, remainingElements: &remainingElements)
+        return selectedText(in: root, remainingElements: &remainingElements, latestError: &latestError)
     }
 
-    private static func selectedText(in element: AXUIElement, remainingElements: inout Int) -> String? {
+    private static func selectedText(
+        in element: AXUIElement,
+        remainingElements: inout Int,
+        latestError: inout AXError?,
+    ) -> String? {
         guard remainingElements > 0 else { return nil }
         remainingElements -= 1
 
-        if case .text(let text) = selectedText(from: element) {
+        switch selectedText(from: element) {
+        case .text(let text):
             return text
+        case .unavailable(let error):
+            latestError = error
+        case .empty:
+            break
         }
 
         var childrenValue: CFTypeRef?
@@ -89,7 +102,7 @@ enum AccessibilitySelectionReader {
             return nil
         }
         for child in children {
-            if let text = selectedText(in: child, remainingElements: &remainingElements) {
+            if let text = selectedText(in: child, remainingElements: &remainingElements, latestError: &latestError) {
                 return text
             }
         }
@@ -99,16 +112,17 @@ enum AccessibilitySelectionReader {
     private enum SelectedTextResult {
         case text(String)
         case empty
-        case unavailable
+        case unavailable(AXError?)
     }
 
     private static func selectedText(from element: AXUIElement) -> SelectedTextResult {
         var selectedValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(
+        let selectedResult = AXUIElementCopyAttributeValue(
             element,
             kAXSelectedTextAttribute as CFString,
             &selectedValue,
-        ) == .success {
+        )
+        if selectedResult == .success {
             return textResult(selectedValue as? String)
         }
 
@@ -116,13 +130,14 @@ enum AccessibilitySelectionReader {
         // range instead of AXSelectedText. Ask Accessibility to resolve only
         // that range, rather than reading the web area's complete value.
         var markerRange: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
+        let markerResult = AXUIElementCopyAttributeValue(
             element,
             kAXSelectedTextMarkerRangeAttribute as CFString,
             &markerRange,
-        ) == .success,
+        )
+        guard markerResult == .success,
               let markerRange else {
-            return .unavailable
+            return .unavailable(markerResult)
         }
         var textValue: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(

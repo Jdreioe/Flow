@@ -244,8 +244,8 @@ final class FlowModel: ObservableObject {
             showMessage("Flow needs Accessibility permission to read selected text.")
         case .failure(.noSelectedText):
             showMessage("Select some text, then press \(settings.hotKey.title).")
-        case .failure(.unavailable):
-            showMessage("This application does not expose its selected text to macOS.")
+        case .failure(.unavailable(let underlying)):
+            showMessage(Self.captureFailureMessage(underlying))
         case .success(let text):
             let normalized = Self.normalized(text)
             if normalized.isEmpty {
@@ -488,6 +488,29 @@ final class FlowModel: ObservableObject {
             }
             return googleSpeech
         }
+    }
+
+    private static func captureFailureMessage(_ underlying: AXError?) -> String {
+        let base = "This application does not expose its selected text to macOS."
+        guard let underlying, underlying != .success else { return base }
+        let detail: String
+        switch underlying {
+        case .cannotComplete:
+            detail = "cannotComplete (the application was too busy to answer Accessibility; try again)"
+        case .apiDisabled:
+            detail = "apiDisabled (Accessibility access is currently disabled)"
+        case .invalidUIElement:
+            detail = "invalidUIElement (the focused element went away)"
+        case .attributeUnsupported:
+            detail = "attributeUnsupported"
+        case .parameterizedAttributeUnsupported:
+            detail = "parameterizedAttributeUnsupported"
+        case .noValue:
+            detail = "noValue"
+        default:
+            detail = "code \(underlying.rawValue)"
+        }
+        return "\(base) Accessibility reported \(detail)."
     }
 
     private static func normalized(_ text: String) -> String {

@@ -1324,6 +1324,9 @@ impl FlowBackend {
         if self.playback_state == state {
             return;
         }
+        if selection::debug_enabled() {
+            eprintln!("[Flow debug] set_state {} -> {}", self.playback_state.id(), state.id());
+        }
         self.playback_state = state;
         self.state = state.id().into();
         self.state_changed();
@@ -1332,6 +1335,9 @@ impl FlowBackend {
     fn set_popup_visible(&mut self, visible: bool) {
         if self.popup_visible == visible {
             return;
+        }
+        if selection::debug_enabled() {
+            eprintln!("[Flow debug] set_popup_visible {visible}");
         }
         self.popup_visible = visible;
         self.popup_visible_changed();

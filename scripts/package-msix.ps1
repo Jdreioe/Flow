@@ -19,6 +19,39 @@ New-Item -ItemType Directory -Force $staging | Out-Null
 
 Copy-Item -LiteralPath $exe -Destination (Join-Path $staging 'flow-windows.exe')
 
+$windeployqt = $null
+foreach ($candidate in @(
+    (Join-Path $env:QT_ROOT_DIR 'bin\windeployqt.exe'),
+    (Get-ChildItem 'C:\Qt\6.*\msvc*_64\bin\windeployqt.exe' -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName))) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+        $windeployqt = $candidate
+        break
+    }
+}
+if (-not $windeployqt) { throw 'windeployqt not found; set QT_ROOT_DIR or install Qt 6 MSVC' }
+
+$stagedExe = Join-Path $staging 'flow-windows.exe'
+& $windeployqt --release --no-translations --dir $staging $stagedExe
+if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
+
+$crtDir = $null
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path -LiteralPath $vswhere) {
+    $vsRoot = & $vswhere -latest -products * -property installationPath
+    if ($vsRoot) {
+        $redist = Get-ChildItem (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName 'x64\Microsoft.VC143.CRT') } |
+            Sort-Object Name -Descending | Select-Object -First 1
+        if ($redist) { $crtDir = Join-Path $redist.FullName 'x64\Microsoft.VC143.CRT' }
+    }
+}
+if ($crtDir) {
+    Copy-Item (Join-Path $crtDir '*.dll') $staging
+} else {
+    Write-Warning 'VC++ CRT DLLs not found; target machines need the VC++ 2015-2022 redistributable'
+}
+
 $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"

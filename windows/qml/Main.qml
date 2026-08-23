@@ -169,6 +169,21 @@ ApplicationWindow {
 
     Component.onCompleted: backend.start()
 
+    Timer {
+        interval: 1000
+        repeat: true
+        running: true
+        onTriggered: console.log("[Flow qml] poll backend.popup_visible =" + backend.popup_visible
+            + " popup.visible =" + popup.visible)
+    }
+
+    Connections {
+        target: backend
+        function onPopup_visible_changed() {
+            popup.syncVisibility()
+        }
+    }
+
     Shortcut {
         sequences: [StandardKey.Cancel]
         enabled: popup.visible && backend.state !== "hidden"
@@ -375,7 +390,7 @@ ApplicationWindow {
 
     Window {
         id: popup
-        visible: backend.popup_visible
+        visible: false
         width: 460
         height: 280
         minimumWidth: 420
@@ -386,14 +401,18 @@ ApplicationWindow {
 
         property bool showLanguages: false
 
-        // Screen is only valid once the window is mapped, so bind the
-        // position to visibility instead of evaluating it up front.
-        onVisibleChanged: {
-            if (!visible)
-                return
-            x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
-            y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+        function syncVisibility() {
+            console.log("[Flow qml] syncVisibility, popup_visible =" + backend.popup_visible)
+            if (backend.popup_visible) {
+                x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
+                y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+                show()
+            } else {
+                hide()
+            }
         }
+
+        Component.onCompleted: console.log("[Flow qml] popup created, visible=" + visible)
 
         Rectangle {
             anchors.fill: parent
