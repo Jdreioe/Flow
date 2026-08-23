@@ -16,6 +16,9 @@ Cloud Text-to-Speech engines as the other platforms.
   `MediaPlayer`. Route language tags select the voice.
 - **Settings**: JSON under `%APPDATA%\jdreioe\Flow\settings.json`, sharing the
   `flow-core` model with Linux.
+- **Updates**: Velopack checks a GitHub Releases feed from the tray menu,
+  downloads delta packages, and applies them on restart (`vpk` packages each
+  release; see `docs/adr/0004-adopt-velopack-for-windows-updates.md`).
 
 ## Building
 

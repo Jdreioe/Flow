@@ -370,10 +370,14 @@ ApplicationWindow {
                 }
                 MenuItemButton {
                     Layout.fillWidth: true
-                    text: qsTr("Check for Updates…")
+                    text: backend.update_ready_version.length > 0
+                          ? qsTr("Restart to Update…") : qsTr("Check for Updates…")
                     onClicked: {
                         trayPanel.hide()
-                        backend.check_for_updates()
+                        if (backend.update_ready_version.length > 0)
+                            backend.restart_to_update()
+                        else
+                            backend.check_for_updates()
                     }
                 }
                 MenuSeparator {

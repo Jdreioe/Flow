@@ -41,12 +41,15 @@ jobs:
       - name: Build flow-windows (release)
         run: cargo build --release --locked --package flow-windows
 
-      - name: Package MSIX
+      - name: Install vpk
+        run: dotnet tool update -g vpk
+
+      - name: Package Velopack release
         env:
           VERSION: ${{ inputs.version }}
-        run: scripts/package-msix.ps1
+        run: scripts/package-velopack.ps1
 
-      - name: Publish release candidate
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -54,20 +57,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = "v$env:VERSION"
           $notes = @"
-          Flow $tag release candidate for Windows.
+          Flow $tag for Windows.
 
-          The package is signed with a self-signed certificate.
-          To install:
-          1. Import Flow-RC.cer into Local Machine > Trusted People.
-          2. Enable sideloading (Settings > Privacy & security > For developers).
-          3. Double-click the .msix to install.
+          Install with the attached Flow-win-Setup.exe. Installed builds update
+          themselves from the tray menu (Check for Updates).
           "@
           $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
           Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          # releases.win.json must ship with every release: the in-app feed
+          # points at releases/latest/download/releases.win.json, which only
+          # resolves for full (non-prerelease) releases.
           gh release create "$tag" `
             --repo "$env:GITHUB_REPOSITORY" `
-            --title "Flow $tag (Windows RC)" `
-            --prerelease `
+            --title "Flow $tag (Windows)" `
             --notes-file $notesPath `
-            "dist/Flow-$tag.msix" `
-            "dist/Flow-RC.cer"
+            (Get-ChildItem "dist/Releases" -File | ForEach-Object FullName)

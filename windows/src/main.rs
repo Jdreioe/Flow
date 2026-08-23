@@ -21,6 +21,10 @@ cpp! {{
 use backend::FlowBackend;
 
 fn main() {
+    // Velopack hooks must run first: install, update, and uninstall pass
+    // through this process with special arguments and may restart it.
+    velopack::VelopackApp::build().run();
+
     // Fusion supports control customization and keeps a consistent look
     // across Windows versions, closer to the macOS presentation. Qt reads
     // the environment through the CRT on Windows, so go through qputenv.

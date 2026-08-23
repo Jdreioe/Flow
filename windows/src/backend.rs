@@ -98,6 +98,8 @@ pub struct FlowBackend {
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
+    update_ready_version: qt_property!(QString; NOTIFY update_ready_version_changed),
+    update_ready_version_changed: qt_signal!(),
     tray_icon_url: qt_property!(QString; NOTIFY tray_icon_url_changed),
     tray_icon_url_changed: qt_signal!(),
 
@@ -360,6 +362,26 @@ pub struct FlowBackend {
             self.start_update_check();
         }
     ),
+    restart_to_update: qt_method!(
+        fn restart_to_update(&mut self) {
+            if self.update_ready_version.is_empty() {
+                return;
+            }
+            self.persist_settings();
+            let pointer = QPointer::from(&*self);
+            let deliver = queued_callback(move |message: String| {
+                if let Some(backend) = pointer.as_pinned() {
+                    backend.borrow_mut().show_message(message);
+                }
+            });
+            std::thread::spawn(move || {
+                match apply_pending_update() {
+                    Ok(()) => {}
+                    Err(message) => deliver(message),
+                }
+            });
+        }
+    ),
     cursor_position: qt_method!(
         fn cursor_position(&self) -> QPoint {
             cpp!(unsafe [] -> QPoint as "QPoint" { return QCursor::pos(); })
@@ -436,6 +458,8 @@ impl Default for FlowBackend {
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
             configuration_error_changed: Default::default(),
+            update_ready_version: QString::default(),
+            update_ready_version_changed: Default::default(),
             tray_icon_url: tray_icon_url().into(),
             tray_icon_url_changed: Default::default(),
             play_cloud: Default::default(),
@@ -467,6 +491,7 @@ impl Default for FlowBackend {
             play_test_voice: Default::default(),
             set_playback_speed: Default::default(),
             check_for_updates: Default::default(),
+            restart_to_update: Default::default(),
             cursor_position: Default::default(),
             playback_speed_changed: Default::default(),
             settings,
@@ -1272,25 +1297,41 @@ impl FlowBackend {
 
     fn start_update_check(&mut self) {
         let pointer = QPointer::from(&*self);
-        let deliver = queued_callback(move |result: Result<String, String>| {
+        let deliver = queued_callback(move |result: Result<UpdateOutcome, String>| {
             if let Some(backend) = pointer.as_pinned() {
                 let mut backend = backend.borrow_mut();
-                let message = match result {
-                    Ok(message) => message,
-                    Err(message) => message,
-                };
+                if let Ok(UpdateOutcome::Downloaded(version)) = &result {
+                    backend.update_ready_version = version.clone().into();
+                    backend.update_ready_version_changed();
+                }
+                // Never interrupt active reading for an update check.
                 if backend.playback_state == PlaybackState::Hidden {
-                    backend.show_message(message);
+                    match result {
+                        Ok(UpdateOutcome::UpToDate) => {
+                            backend.show_message("Flow is up to date.");
+                        }
+                        Ok(UpdateOutcome::Downloaded(version)) => {
+                            backend.show_message(format!(
+                                "Flow {version} is downloaded. Restart Flow to finish updating."
+                            ));
+                        }
+                        Err(message) => backend.show_message(message),
+                    }
                 } else {
-                    // Never interrupt active reading for an update check.
+                    let message = match result {
+                        Ok(UpdateOutcome::UpToDate) => "Flow is up to date.".to_owned(),
+                        Ok(UpdateOutcome::Downloaded(version)) => format!(
+                            "Flow {version} is downloaded. Restart Flow to finish updating."
+                        ),
+                        Err(message) => message,
+                    };
                     backend.message = message.into();
                     backend.message_changed();
                 }
             }
         });
         std::thread::spawn(move || {
-            let result = fetch_latest_release_message(env!("CARGO_PKG_VERSION"));
-            deliver(Ok(result));
+            deliver(check_for_update());
         });
     }
 
@@ -1355,39 +1396,49 @@ impl Drop for FlowBackend {
     }
 }
 
-const UPDATE_API: &str = "https://api.github.com/repos/jdreioe/flow/releases/latest";
+const UPDATE_FEED: &str =
+    "https://github.com/jdreioe/flow/releases/latest/download/releases.win.json";
 
-#[derive(serde::Deserialize)]
-struct LatestRelease {
-    tag_name: String,
+enum UpdateOutcome {
+    UpToDate,
+    Downloaded(String),
 }
 
-fn fetch_latest_release_message(current_version: &str) -> String {
-    let release: Result<LatestRelease, String> = (|| {
-        reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|_| "Flow could not check for updates.".to_owned())?
-            .get(UPDATE_API)
-            .header("User-Agent", "Flow")
-            .send()
-            .map_err(|_| "Flow could not check for updates.".to_owned())?
-            .error_for_status()
-            .map_err(|_| "Flow could not check for updates.".to_owned())?
-            .json()
-            .map_err(|_| "Flow could not check for updates.".to_owned())
-    })();
-    match release {
-        Ok(release) => {
-            let latest = release.tag_name.trim_start_matches('v');
-            if latest != current_version {
-                format!("Flow {latest} is available. Download it from github.com/jdreioe/flow/releases.")
-            } else {
-                "Flow is up to date.".to_owned()
-            }
+fn update_manager() -> Result<velopack::UpdateManager, String> {
+    let source = velopack::sources::HttpSource::new(UPDATE_FEED);
+    velopack::UpdateManager::new(source, None, None).map_err(|_| {
+        "Flow can only check for updates when running from an installed build.".to_owned()
+    })
+}
+
+fn check_for_update() -> Result<UpdateOutcome, String> {
+    let manager = update_manager()?;
+    match manager
+        .check_for_updates()
+        .map_err(|_| "Flow could not check for updates.".to_owned())?
+    {
+        velopack::UpdateCheck::RemoteIsEmpty | velopack::UpdateCheck::NoUpdateAvailable => {
+            Ok(UpdateOutcome::UpToDate)
         }
-        Err(message) => message,
+        velopack::UpdateCheck::UpdateAvailable(update) => {
+            let version = update.TargetFullRelease.Version.clone();
+            manager
+                .download_updates(&update, None)
+                .map_err(|_| format!("Flow found version {version} but could not download it."))?;
+            Ok(UpdateOutcome::Downloaded(version))
+        }
     }
+}
+
+fn apply_pending_update() -> Result<(), String> {
+    let manager = update_manager()?;
+    let pending = manager
+        .get_update_pending_restart()
+        .ok_or_else(|| "No downloaded Flow update is pending.".to_owned())?;
+    manager.apply_updates_and_restart(pending).map_err(|_| {
+        "Flow could not apply its update. Download it from github.com/jdreioe/flow/releases."
+            .to_owned()
+    })
 }
 
 fn hot_key_title(preset: HotKeyPreset) -> &'static str {
