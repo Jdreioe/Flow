@@ -313,10 +313,17 @@ ApplicationWindow {
         title: "Flow playback"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
             | Qt.WindowDoesNotAcceptFocus
-        x: Math.round((Screen.width - width) / 2)
-        y: Math.round((Screen.height - height) / 2)
 
         property bool showLanguages: false
+
+        // Screen is only valid once the window is mapped, so bind the
+        // position to visibility instead of evaluating it up front.
+        onVisibleChanged: {
+            if (!visible)
+                return
+            x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
+            y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+        }
 
         Rectangle {
             anchors.fill: parent

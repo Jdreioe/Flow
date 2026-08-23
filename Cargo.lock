@@ -733,11 +733,14 @@ name = "flow-windows"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "cpp",
+ "cpp_build",
  "cstr",
  "directories",
  "flow-core",
  "keyring",
  "qmetaobject",
+ "qttypes",
  "reqwest",
  "serde",
  "serde_json",

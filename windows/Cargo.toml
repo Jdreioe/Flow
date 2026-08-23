@@ -11,11 +11,13 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
+cpp = "0.5.10"
 cstr = "0.2"
 directories = "6"
 flow-core = { path = "../core" }
 keyring = "4.1.6"
 qmetaobject = { version = "0.2.10", default-features = false }
+qttypes = "0.2.12"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,3 +37,6 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+cpp_build = "0.5.10"

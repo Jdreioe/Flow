@@ -1,4 +1,4 @@
-import QtQuick
+﻿import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
@@ -20,6 +20,28 @@ ApplicationWindow {
     property var wordTimings: []
     property int currentWordStart: -1
     property int currentWordEnd: -1
+
+    property bool activePlaybackState: backend.state === "preparing"
+        || backend.state === "playing" || backend.state === "paused"
+        || backend.state === "awaitingRoute"
+
+    component MenuItemButton: Button {
+        id: menuItem
+        flat: true
+        contentItem: Text {
+            text: menuItem.text
+            font: menuItem.font
+            color: menuItem.enabled ? menuItem.palette.buttonText : menuItem.palette.mid
+            horizontalAlignment: Text.AlignLeft
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            implicitHeight: 28
+            radius: 6
+            color: menuItem.hovered && menuItem.enabled ? menuItem.palette.midlight : "transparent"
+        }
+    }
 
     function escapedHtml(value) {
         return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -60,23 +82,24 @@ ApplicationWindow {
             return
         }
 
+        // SystemTrayIcon.geometry is unreliable on Windows once the icon sits
+        // in the hidden overflow flyout, so anchor to the cursor instead.
         let screen = trayPanel.screen
         let availableX = screen.virtualX
         let availableY = screen.virtualY
         let availableWidth = screen.desktopAvailableWidth
         let availableHeight = screen.desktopAvailableHeight
-        let icon = tray.geometry
-        if (icon.width > 0 && icon.height > 0) {
-            trayPanel.x = Math.max(availableX + 8,
-                Math.min(icon.x + Math.round((icon.width - trayPanel.width) / 2),
-                    availableX + availableWidth - trayPanel.width - 8))
-            trayPanel.y = icon.y > availableY + availableHeight / 2
-                ? icon.y - trayPanel.height - 8
-                : icon.y + icon.height + 8
-        } else {
-            trayPanel.x = availableX + availableWidth - trayPanel.width - 16
-            trayPanel.y = availableY + availableHeight - trayPanel.height - 48
-        }
+        let pos = backend.cursor_position()
+        let x = pos.x + 6
+        let y = pos.y + 6
+        if (x + trayPanel.width > availableX + availableWidth - 8)
+            x = pos.x - trayPanel.width - 6
+        if (y + trayPanel.height > availableY + availableHeight - 8)
+            y = pos.y - trayPanel.height - 6
+        trayPanel.x = Math.max(availableX + 4,
+            Math.min(x, availableX + availableWidth - trayPanel.width - 4))
+        trayPanel.y = Math.max(availableY + 4,
+            Math.min(y, availableY + availableHeight - trayPanel.height - 4))
         trayPanel.show()
         trayPanel.raise()
     }
@@ -87,6 +110,14 @@ ApplicationWindow {
                 return entry[1]
         }
         return tag
+    }
+
+    function hotKeyTitle() {
+        switch (settings.hotKey) {
+        case "altSuperSpace": return qsTr("Alt+Win+Space")
+        case "controlAltR": return qsTr("Ctrl+Alt+R")
+        default: return qsTr("Alt+Win+R")
+        }
     }
 
     function allRoutes() {
@@ -138,6 +169,12 @@ ApplicationWindow {
 
     Component.onCompleted: backend.start()
 
+    Shortcut {
+        sequences: [StandardKey.Cancel]
+        enabled: popup.visible && backend.state !== "hidden"
+        onActivated: backend.stop()
+    }
+
     Connections {
         target: backend
 
@@ -163,16 +200,16 @@ ApplicationWindow {
                 player.playbackRate = rate
         }
 
-        function onPause_playback() {
-            let player = cloudPlayer()
-            if (cloudActive && player)
-                player.pause()
-        }
-
         function onPlayback_speed_changed() {
             let player = cloudPlayer()
             if (cloudActive && player)
                 player.playbackRate = backend.playback_speed
+        }
+
+        function onPause_playback() {
+            let player = cloudPlayer()
+            if (cloudActive && player)
+                player.pause()
         }
 
         function onResume_playback() {
@@ -259,12 +296,11 @@ ApplicationWindow {
     Window {
         id: trayPanel
         visible: false
-        width: 220
-        height: 156
+        width: 240
+        height: trayColumn.implicitHeight + 20
         color: "transparent"
         title: "Flow"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-            | Qt.WindowDoesNotAcceptFocus
 
         Rectangle {
             anchors.fill: parent
@@ -274,29 +310,63 @@ ApplicationWindow {
             border.width: 1
 
             ColumnLayout {
+                id: trayColumn
                 anchors.fill: parent
                 anchors.margins: 10
-                spacing: 6
+                spacing: 2
 
-                Button {
+                MenuItemButton {
                     Layout.fillWidth: true
-                    text: "Read selected text"
+                    text: qsTr("Read selected text")
                     onClicked: {
                         trayPanel.hide()
                         backend.read_selection()
                     }
                 }
-                Button {
+                Label {
                     Layout.fillWidth: true
-                    text: "Settings"
+                    Layout.leftMargin: 12
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 12
+                    color: backend.shortcut_status.indexOf("Global shortcut:") === 0
+                        ? palette.mid : "red"
+                    text: backend.shortcut_status === "Registering global shortcut…"
+                        ? hotKeyTitle()
+                        : backend.shortcut_status
+                }
+                MenuSeparator {
+                    Layout.fillWidth: true
+                }
+                MenuItemButton {
+                    Layout.fillWidth: true
+                    text: qsTr("Settings…")
                     onClicked: {
                         trayPanel.hide()
                         backend.open_settings()
                     }
                 }
-                Button {
+                MenuItemButton {
                     Layout.fillWidth: true
-                    text: "Quit Flow"
+                    text: qsTr("What's New…")
+                    onClicked: {
+                        trayPanel.hide()
+                        Qt.openUrlExternally("https://github.com/jdreioe/flow/releases/latest")
+                    }
+                }
+                MenuItemButton {
+                    Layout.fillWidth: true
+                    text: qsTr("Check for Updates…")
+                    onClicked: {
+                        trayPanel.hide()
+                        backend.check_for_updates()
+                    }
+                }
+                MenuSeparator {
+                    Layout.fillWidth: true
+                }
+                MenuItemButton {
+                    Layout.fillWidth: true
+                    text: qsTr("Quit Flow")
                     onClicked: Qt.quit()
                 }
             }
@@ -306,17 +376,24 @@ ApplicationWindow {
     Window {
         id: popup
         visible: backend.popup_visible
-        width: 520
-        height: 250
+        width: 460
+        height: 280
         minimumWidth: 420
         color: "transparent"
         title: "Flow playback"
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
             | Qt.WindowDoesNotAcceptFocus
-        x: Math.round((Screen.width - width) / 2)
-        y: Math.round((Screen.height - height) / 2)
 
         property bool showLanguages: false
+
+        // Screen is only valid once the window is mapped, so bind the
+        // position to visibility instead of evaluating it up front.
+        onVisibleChanged: {
+            if (!visible)
+                return
+            x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
+            y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+        }
 
         Rectangle {
             anchors.fill: parent
@@ -330,40 +407,107 @@ ApplicationWindow {
                 anchors.margins: 20
                 spacing: 12
 
-                Label {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: {
-                        switch (backend.state) {
-                        case "preparing": return "Preparing playback"
-                        case "playing": return "Reading"
-                        case "paused": return "Paused"
-                        case "awaitingRoute": return "Choose a voice"
-                        case "finished": return "Finished"
-                        default: return "Flow"
+                    spacing: 8
+
+                    Label {
+                        text: {
+                            switch (backend.state) {
+                            case "preparing": return qsTr("Preparing playback")
+                            case "playing": return qsTr("Reading")
+                            case "paused": return qsTr("Paused")
+                            case "awaitingRoute": return qsTr("Choose a voice")
+                            case "finished": return qsTr("Finished")
+                            default: return "Flow"
+                            }
                         }
+                        font.bold: true
+                        Accessible.name: text
                     }
-                    font.pixelSize: 20
-                    font.bold: true
-                    Accessible.name: text
+                    Item { Layout.fillWidth: true }
+                    ComboBox {
+                        id: overridePicker
+                        visible: root.activePlaybackState
+                        Layout.maximumWidth: 150
+                        textRole: "text"
+                        valueRole: "value"
+                        model: {
+                            let items = [{ value: "", text: qsTr("Auto") }]
+                            for (let entry of root.snapshot.supportedLanguages)
+                                items.push({ value: entry[0], text: entry[1] })
+                            return items
+                        }
+                        currentIndex: {
+                            let items = model
+                            for (let index = 0; index < items.length; ++index) {
+                                if (items[index].value === backend.text_language_override)
+                                    return index
+                            }
+                            return 0
+                        }
+                        onActivated: backend.set_text_language_override(currentValue)
+                        Accessible.name: qsTr("Language override")
+                    }
+                    Button {
+                        visible: backend.state === "playing" || backend.state === "paused"
+                        flat: true
+                        text: popup.showLanguages ? qsTr("Hide languages") : qsTr("Language…")
+                        enabled: root.detectedLanguages.length > 0
+                        onClicked: popup.showLanguages = !popup.showLanguages
+                    }
+                    Button {
+                        text: qsTr("Stop")
+                        Accessible.name: qsTr("Stop reading")
+                        Accessible.description: qsTr("Stop reading and close the Flow popup")
+                        onClicked: backend.stop()
+                    }
                 }
 
-                Label {
-                    visible: backend.state === "awaitingRoute"
+                ColumnLayout {
+                    visible: (backend.text_language_override !== "" && backend.override_needs_route)
+                        || backend.manual_route_needed
                     Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    text: backend.manual_route_needed
-                        ? qsTr("Choose how Flow should read this sentence before playback starts.")
-                        : qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
-                }
+                    spacing: 8
 
-                Label {
-                    visible: backend.manual_route_needed
-                    Layout.fillWidth: true
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                    wrapMode: Text.WordWrap
-                    text: backend.manual_route_sentence_text
-                    Accessible.name: qsTr("Sentence requiring a voice choice")
+                    Label {
+                        visible: backend.manual_route_needed
+                        Layout.fillWidth: true
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                        wrapMode: Text.WordWrap
+                        text: backend.manual_route_sentence_text
+                        Accessible.name: qsTr("Sentence requiring a voice choice")
+                    }
+                    ComboBox {
+                        id: overrideRoutePicker
+                        property string chosenRouteId: ""
+                        onVisibleChanged: if (!visible) chosenRouteId = ""
+                        Layout.maximumWidth: 260
+                        model: root.allRoutes()
+                        textRole: "languageTag"
+                        valueRole: "id"
+                        displayText: {
+                            let routes = model
+                            for (let index = 0; index < routes.length; ++index) {
+                                if (routes[index].id === chosenRouteId)
+                                    return qsTr("Read as ") + root.languageName(routes[index].languageTag)
+                            }
+                            return qsTr("Read as…")
+                        }
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            width: overrideRoutePicker.width
+                            text: root.languageName(modelData.languageTag)
+                        }
+                        onActivated: {
+                            chosenRouteId = currentValue
+                            backend.set_override_route(currentValue)
+                        }
+                        Accessible.name: backend.manual_route_needed
+                            ? qsTr("Read this sentence as")
+                            : qsTr("Read the overridden language as")
+                    }
                 }
 
                 Label {
@@ -374,25 +518,79 @@ ApplicationWindow {
                 }
 
                 Label {
-                    visible: backend.state === "preparing"
-                    Layout.fillWidth: true
-                    text: "Preparing speech…"
-                }
-
-                Label {
-                    visible: backend.state === "playing" || backend.state === "paused"
+                    visible: backend.state !== "message"
                     Layout.fillWidth: true
                     maximumLineCount: 4
                     elide: Text.ElideRight
                     wrapMode: Text.WordWrap
-                    textFormat: Text.RichText
-                    text: root.highlightedText()
-                    Accessible.name: "Selected text being read"
+                    textFormat: settings.wordHighlightingEnabled ? Text.RichText : Text.PlainText
+                    text: settings.wordHighlightingEnabled
+                        ? root.highlightedText()
+                        : root.escapedHtml(backend.playback_text)
+                    Accessible.name: qsTr("Selected text being read")
+                }
+
+                ScrollView {
+                    visible: popup.showLanguages
+                        && root.detectedLanguages.length > 0
+                        && (backend.state === "playing" || backend.state === "paused"
+                            || backend.state === "awaitingRoute")
+                    Layout.fillWidth: true
+                    Layout.maximumHeight: 180
+                    clip: true
+
+                    Column {
+                        width: parent.width
+                        spacing: 8
+
+                        Repeater {
+                            model: root.detectedLanguages
+
+                            RowLayout {
+                                required property var modelData
+                                width: parent.width
+
+                                Label {
+                                    text: root.languageName(modelData)
+                                    font.bold: true
+                                    font.pixelSize: 12
+                                }
+                                Item { Layout.fillWidth: true }
+                                ComboBox {
+                                    id: languageRoutePicker
+                                    Layout.maximumWidth: 220
+                                    model: root.allRoutes()
+                                    textRole: "languageTag"
+                                    valueRole: "id"
+                                    displayText: qsTr("Read as ") + root.languageName(modelData)
+                                    delegate: ItemDelegate {
+                                        required property var modelData
+                                        width: languageRoutePicker.width
+                                        text: root.languageName(modelData.languageTag)
+                                    }
+                                    onActivated: backend.set_route_for_language(modelData, currentValue)
+                                    Accessible.name: qsTr("Read all %1 sentences as").arg(root.languageName(modelData))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Label {
+                    visible: backend.state === "awaitingRoute"
+                        && (backend.manual_route_needed
+                            || (backend.override_needs_route && backend.text_language_override !== ""))
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 12
+                    opacity: 0.75
+                    text: backend.manual_route_needed
+                        ? qsTr("Choose how Flow should read this sentence before playback starts.")
+                        : qsTr("Choose how Flow should read this selection before playback starts.")
                 }
 
                 RowLayout {
-                    visible: (backend.state === "playing" || backend.state === "paused")
-                        && root.cloudActive
+                    visible: root.activePlaybackState
                     Layout.fillWidth: true
                     spacing: 10
 
@@ -421,144 +619,17 @@ ApplicationWindow {
                     Label {
                         text: Number(backend.playback_speed.toFixed(2)).toString() + "×"
                         horizontalAlignment: Text.AlignRight
-                        Layout.preferredWidth: 48
+                        Layout.preferredWidth: 44
                     }
                 }
 
-                ComboBox {
-                    id: overrideRoutePicker
-                    visible: (backend.text_language_override !== "" && backend.override_needs_route)
-                        || backend.manual_route_needed
-                    property string chosenRouteId: ""
-                    onVisibleChanged: if (!visible) chosenRouteId = ""
-                    Layout.preferredWidth: 260
-                    model: root.allRoutes()
-                    textRole: "languageTag"
-                    valueRole: "id"
-                    displayText: {
-                        let routes = model
-                        for (let index = 0; index < routes.length; ++index) {
-                            if (routes[index].id === chosenRouteId)
-                                return qsTr("Read as ") + root.languageName(routes[index].languageTag)
-                        }
-                        return qsTr("Read as…")
-                    }
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        width: overrideRoutePicker.width
-                        text: root.languageName(modelData.languageTag)
-                    }
-                    onActivated: {
-                        chosenRouteId = currentValue
-                        backend.set_override_route(currentValue)
-                    }
-                    Accessible.name: backend.manual_route_needed
-                        ? qsTr("Read this sentence as")
-                        : qsTr("Read the overridden language as")
-                }
-
-                ScrollView {
-                    visible: popup.showLanguages
-                        && root.detectedLanguages.length > 0
-                        && (backend.state === "playing" || backend.state === "paused"
-                            || backend.state === "awaitingRoute")
-                    Layout.fillWidth: true
-                    Layout.maximumHeight: 220
-                    clip: true
-
-                    Column {
-                        width: parent.width
-                        spacing: 12
-
-                        Repeater {
-                            model: root.detectedLanguages
-
-                            Frame {
-                                required property var modelData
-                                width: parent.width
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    spacing: 8
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: root.languageName(modelData)
-                                        font.bold: true
-                                    }
-                                    ComboBox {
-                                        id: languageRoutePicker
-                                        Layout.fillWidth: true
-                                        model: root.allRoutes()
-                                        textRole: "languageTag"
-                                        valueRole: "id"
-                                        displayText: qsTr("Read as ") + root.languageName(modelData)
-                                        delegate: ItemDelegate {
-                                            required property var modelData
-                                            width: languageRoutePicker.width
-                                            text: root.languageName(modelData.languageTag)
-                                        }
-                                        onActivated: backend.set_route_for_language(modelData, currentValue)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Item { Layout.fillHeight: true }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: backend.state === "preparing"
-                        || backend.state === "playing"
-                        || backend.state === "paused"
-                        || backend.state === "awaitingRoute"
-
-                    Button {
-                        text: "Stop"
-                        Accessible.description: "Stop reading and close the Flow popup"
-                        onClicked: backend.stop()
-                    }
-                    ComboBox {
-                        id: overridePicker
-                        visible: backend.state === "preparing"
-                            || backend.state === "playing"
-                            || backend.state === "paused"
-                            || backend.state === "awaitingRoute"
-                        Layout.preferredWidth: 180
-                        textRole: "text"
-                        valueRole: "value"
-                        model: {
-                            let items = [{ value: "", text: qsTr("Auto") }]
-                            for (let entry of root.snapshot.supportedLanguages)
-                                items.push({ value: entry[0], text: entry[1] })
-                            return items
-                        }
-                        currentIndex: {
-                            let items = model
-                            for (let index = 0; index < items.length; ++index) {
-                                if (items[index].value === backend.text_language_override)
-                                    return index
-                            }
-                            return 0
-                        }
-                        onActivated: backend.set_text_language_override(currentValue)
-                        Accessible.name: qsTr("Language override")
-                    }
-                    Button {
-                        visible: backend.state === "playing" || backend.state === "paused"
-                        flat: true
-                        text: popup.showLanguages ? qsTr("Hide languages") : qsTr("Language…")
-                        enabled: root.detectedLanguages.length > 0
-                        onClicked: popup.showLanguages = !popup.showLanguages
-                    }
-                    Item { Layout.fillWidth: true }
-                    Button {
-                        visible: backend.state === "playing" || backend.state === "paused"
-                        text: backend.state === "paused" ? "Resume" : "Pause"
-                        onClicked: backend.pause_or_resume()
-                    }
+                Button {
+                    visible: backend.state === "playing" || backend.state === "paused"
+                    highlighted: true
+                    text: backend.state === "paused" ? qsTr("Resume") : qsTr("Pause")
+                    Accessible.name: backend.state === "paused"
+                        ? qsTr("Resume reading") : qsTr("Pause reading")
+                    onClicked: backend.pause_or_resume()
                 }
             }
         }
@@ -572,6 +643,11 @@ ApplicationWindow {
         minimumWidth: 580
         minimumHeight: 520
         title: "Flow Settings"
+
+        Component.onCompleted: {
+            setX(Math.round((Screen.width - width) / 2))
+            setY(Math.round((Screen.height - height) / 2))
+        }
 
         onClosing: function(close) {
             close.accepted = false
@@ -597,47 +673,53 @@ ApplicationWindow {
                 }
 
                 GroupBox {
-                    title: "Access"
+                    title: qsTr("Access")
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
                     Layout.rightMargin: 20
 
                     ColumnLayout {
                         anchors.fill: parent
-                        ComboBox {
+                        RowLayout {
                             Layout.fillWidth: true
-                            model: [
-                                { value: "altSuperR", label: "Alt-Super-R" },
-                                { value: "altSuperSpace", label: "Alt-Super-Space" },
-                                { value: "controlAltR", label: "Control-Alt-R" }
-                            ]
-                            textRole: "label"
-                            valueRole: "value"
-                            currentIndex: model.findIndex(function(item) { return item.value === settings.hotKey })
-                            onActivated: backend.update_setting("hotKey", currentValue)
+                            Label { text: qsTr("Global hotkey") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: [
+                                    { value: "altSuperR", label: hotKeyTitle() },
+                                    { value: "altSuperSpace", label: qsTr("Alt+Win+Space") },
+                                    { value: "controlAltR", label: qsTr("Ctrl+Alt+R") }
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: model.findIndex(function(item) { return item.value === settings.hotKey })
+                                onActivated: backend.update_setting("hotKey", currentValue)
+                            }
                         }
                         CheckBox {
                             visible: settings.speechSource === "google"
-                            text: "Highlight spoken words"
+                            text: qsTr("Highlight spoken words")
                             checked: settings.wordHighlightingEnabled
                             onToggled: backend.update_setting("wordHighlightingEnabled", checked ? "true" : "false")
                         }
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
+                            color: backend.shortcut_status.indexOf("Global shortcut:") === 0
+                                ? palette.mid : "red"
                             text: backend.shortcut_status
                         }
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "Flow reads highlighted text through Windows UI Automation. It never replaces your normal clipboard."
+                            text: qsTr("Flow reads only the selection that Windows UI Automation exposes when you trigger it.")
                         }
                     }
                 }
 
                 GroupBox {
-                    title: "Language Flow"
+                    title: qsTr("Language Flow")
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
                     Layout.rightMargin: 20
@@ -648,7 +730,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "Choose a fallback voice, then add languages that need their own voice. Detection stays on this device."
+                            text: qsTr("Choose a fallback voice, then add languages that need their own voice. Detection stays on this device.")
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -703,6 +785,7 @@ ApplicationWindow {
                             model: settings.languageRoutes
 
                             Frame {
+                                id: routeFrame
                                 required property var modelData
                                 Layout.fillWidth: true
                                 property bool expanded: false
@@ -710,49 +793,49 @@ ApplicationWindow {
                                 ColumnLayout {
                                     anchors.fill: parent
                                     Button {
-                                        text: root.languageName(modelData.languageTag) + " · " + (
+                                        text: root.languageName(routeFrame.modelData.languageTag) + " · " + (
                                             settings.speechSource === "system"
-                                                ? (modelData.systemVoiceName || "System default voice")
+                                                ? (routeFrame.modelData.systemVoiceName || "System default voice")
                                                 : settings.speechSource === "azure"
-                                                    ? (modelData.azureVoiceName || "Fallback Azure voice")
-                                                    : (modelData.googleVoiceName || "Google default voice"))
+                                                    ? (routeFrame.modelData.azureVoiceName || "Fallback Azure voice")
+                                                    : (routeFrame.modelData.googleVoiceName || "Google default voice"))
                                         font.bold: true
                                         flat: true
-                                        onClicked: parent.parent.expanded = !parent.parent.expanded
+                                        onClicked: routeFrame.expanded = !routeFrame.expanded
                                     }
                                     ComboBox {
                                         id: systemVoicePicker
-                                        visible: parent.parent.expanded && settings.speechSource === "system"
+                                        visible: routeFrame.expanded && settings.speechSource === "system"
                                         Layout.fillWidth: true
-                                        model: ["Desktop default voice"].concat(root.voicesFor(modelData.languageTag))
-                                        currentIndex: modelData.systemVoiceName
-                                            ? Math.max(0, model.indexOf(modelData.systemVoiceName))
+                                        model: ["Desktop default voice"].concat(root.voicesFor(routeFrame.modelData.languageTag))
+                                        currentIndex: routeFrame.modelData.systemVoiceName
+                                            ? Math.max(0, model.indexOf(routeFrame.modelData.systemVoiceName))
                                             : 0
-                                        onActivated: backend.update_route(modelData.id, "systemVoiceName",
+                                        onActivated: backend.update_route(routeFrame.modelData.id, "systemVoiceName",
                                             currentIndex === 0 ? "" : currentText)
                                     }
                                     ComboBox {
                                         id: routeAzureVoicePicker
-                                        visible: parent.parent.expanded && settings.speechSource === "azure"
+                                        visible: routeFrame.expanded && settings.speechSource === "azure"
                                         Layout.fillWidth: true
-                                        model: root.azureVoicesFor(modelData.languageTag, false)
-                                        currentIndex: Math.max(0, model.indexOf(modelData.azureVoiceName || ""))
+                                        model: root.azureVoicesFor(routeFrame.modelData.languageTag, false)
+                                        currentIndex: Math.max(0, model.indexOf(routeFrame.modelData.azureVoiceName || ""))
                                         displayText: currentText || "Choose an Azure voice"
-                                        onActivated: backend.update_route(modelData.id, "azureVoiceName", currentText)
+                                        onActivated: backend.update_route(routeFrame.modelData.id, "azureVoiceName", currentText)
                                     }
                                     ComboBox {
                                         id: routeGoogleVoicePicker
-                                        visible: parent.parent.expanded && settings.speechSource === "google"
+                                        visible: routeFrame.expanded && settings.speechSource === "google"
                                         Layout.fillWidth: true
-                                        model: ["Google default voice"].concat(root.googleVoicesFor(modelData.languageTag))
-                                        currentIndex: modelData.googleVoiceName
-                                            ? Math.max(0, model.indexOf(modelData.googleVoiceName))
+                                        model: ["Google default voice"].concat(root.googleVoicesFor(routeFrame.modelData.languageTag))
+                                        currentIndex: routeFrame.modelData.googleVoiceName
+                                            ? Math.max(0, model.indexOf(routeFrame.modelData.googleVoiceName))
                                             : 0
-                                        onActivated: backend.update_route(modelData.id, "googleVoiceName",
+                                        onActivated: backend.update_route(routeFrame.modelData.id, "googleVoiceName",
                                             currentIndex === 0 ? "" : currentText)
                                     }
                                     RowLayout {
-                                        visible: parent.parent.expanded
+                                        visible: routeFrame.expanded
                                         Label { text: qsTr("Speed") }
                                         ComboBox {
                                             id: routeSpeedPicker
@@ -760,17 +843,17 @@ ApplicationWindow {
                                             property var speeds: [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]
                                             model: [qsTr("Same as Language Flow")].concat(
                                                 speeds.map(function(speed) { return Number(speed.toFixed(2)).toString() + "×" }))
-                                            currentIndex: modelData.playbackSpeed !== null
-                                                ? 1 + speeds.indexOf(modelData.playbackSpeed)
+                                            currentIndex: routeFrame.modelData.playbackSpeed !== null
+                                                ? 1 + speeds.indexOf(routeFrame.modelData.playbackSpeed)
                                                 : 0
-                                            onActivated: backend.update_route(modelData.id, "playbackSpeed",
+                                            onActivated: backend.update_route(routeFrame.modelData.id, "playbackSpeed",
                                                 currentIndex === 0 ? "" : String(speeds[currentIndex - 1]))
                                         }
                                     }
                                     Button {
-                                        visible: parent.parent.expanded
-                                        text: "Remove language"
-                                        onClicked: backend.remove_language(modelData.id)
+                                        visible: routeFrame.expanded
+                                        text: qsTr("Remove language")
+                                        onClicked: backend.remove_language(routeFrame.modelData.id)
                                     }
                                 }
                             }
@@ -790,10 +873,10 @@ ApplicationWindow {
                                     width: languageToAdd.width
                                     text: modelData[1]
                                 }
-                                displayText: currentIndex >= 0 ? model[currentIndex][1] : "All supported languages are enabled"
+                                displayText: currentIndex >= 0 ? model[currentIndex][1] : qsTr("All supported languages are enabled")
                             }
                             Button {
-                                text: "Add language"
+                                text: qsTr("Add language")
                                 enabled: languageToAdd.currentIndex >= 0
                                 onClicked: backend.add_language(languageToAdd.model[languageToAdd.currentIndex][0])
                             }
@@ -802,25 +885,36 @@ ApplicationWindow {
                 }
 
                 GroupBox {
-                    title: "Speech"
+                    title: qsTr("Speech")
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
                     Layout.rightMargin: 20
 
                     ColumnLayout {
                         anchors.fill: parent
-                        ComboBox {
+                        RowLayout {
                             Layout.fillWidth: true
-                            model: [
-                                { value: "system", label: "System voice" },
-                                { value: "azure", label: "Azure voice" },
-                                { value: "google", label: "Google Cloud voice" }
-                            ]
-                            textRole: "label"
-                            valueRole: "value"
-                            currentIndex: settings.speechSource === "azure" ? 1
-                                : settings.speechSource === "google" ? 2 : 0
-                            onActivated: backend.update_setting("speechSource", currentValue)
+                            Label { text: qsTr("Reading source") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: [
+                                    { value: "system", label: qsTr("System voice") },
+                                    { value: "azure", label: qsTr("Azure voice") },
+                                    { value: "google", label: qsTr("Google Cloud voice") }
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: settings.speechSource === "azure" ? 1
+                                    : settings.speechSource === "google" ? 2 : 0
+                                onActivated: backend.update_setting("speechSource", currentValue)
+                            }
+                        }
+                        Label {
+                            visible: settings.speechSource === "system"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            opacity: 0.75
+                            text: qsTr("System voices and language detection stay on this PC.")
                         }
 
                         Label {
@@ -831,20 +925,20 @@ ApplicationWindow {
                             id: endpointField
                             visible: settings.speechSource === "azure" && !settings.azureEndpoint
                             Layout.fillWidth: true
-                            placeholderText: "Region or HTTPS endpoint"
+                            placeholderText: qsTr("Region or HTTPS endpoint")
                             Accessible.name: placeholderText
                         }
                         TextField {
                             id: keyField
                             visible: settings.speechSource === "azure" && !settings.azureEndpoint
                             Layout.fillWidth: true
-                            placeholderText: "Azure Speech subscription key"
+                            placeholderText: qsTr("Azure Speech subscription key")
                             echoMode: TextInput.Password
                             Accessible.name: placeholderText
                         }
                         Button {
                             visible: settings.speechSource === "azure" && !settings.azureEndpoint
-                            text: "Save Azure configuration"
+                            text: qsTr("Save Azure configuration")
                             enabled: endpointField.text.trim().length > 0 && keyField.text.trim().length > 0
                             onClicked: {
                                 backend.save_azure_configuration(endpointField.text, keyField.text)
@@ -854,11 +948,11 @@ ApplicationWindow {
                         RowLayout {
                             visible: settings.speechSource === "azure" && !!settings.azureEndpoint
                             Button {
-                                text: "Refresh Azure voices"
+                                text: qsTr("Refresh Azure voices")
                                 onClicked: backend.refresh_azure_voices()
                             }
                             Button {
-                                text: "Remove Azure configuration"
+                                text: qsTr("Remove Azure configuration")
                                 onClicked: backend.clear_azure_configuration()
                             }
                         }
@@ -867,30 +961,30 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "Azure receives selected text only when Azure is selected. The subscription key is stored in your desktop keyring."
+                            text: qsTr("Azure sends selected text to your Speech resource to synthesize it. The subscription key stays in Windows Credential Manager.")
                         }
                         Button {
                             visible: settings.speechSource === "azure"
                             flat: true
-                            text: "Open Azure Speech resources"
+                            text: qsTr("Open Azure Speech resources")
                             onClicked: Qt.openUrlExternally("https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.CognitiveServices%2Faccounts")
                         }
 
                         Label {
                             visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
-                            text: "Google Cloud API key configured"
+                            text: qsTr("Google Cloud API key configured")
                         }
                         TextField {
                             id: googleKeyField
                             visible: settings.speechSource === "google" && !settings.googleApiKeyConfigured
                             Layout.fillWidth: true
-                            placeholderText: "Google Cloud API key"
+                            placeholderText: qsTr("Google Cloud API key")
                             echoMode: TextInput.Password
                             Accessible.name: placeholderText
                         }
                         Button {
                             visible: settings.speechSource === "google" && !settings.googleApiKeyConfigured
-                            text: "Save Google configuration"
+                            text: qsTr("Save Google configuration")
                             enabled: googleKeyField.text.trim().length > 0
                             onClicked: {
                                 backend.save_google_configuration(googleKeyField.text)
@@ -900,11 +994,11 @@ ApplicationWindow {
                         RowLayout {
                             visible: settings.speechSource === "google" && settings.googleApiKeyConfigured
                             Button {
-                                text: "Refresh Google voices"
+                                text: qsTr("Refresh Google voices")
                                 onClicked: backend.refresh_google_voices()
                             }
                             Button {
-                                text: "Remove Google configuration"
+                                text: qsTr("Remove Google configuration")
                                 onClicked: backend.clear_google_configuration()
                             }
                         }
@@ -913,18 +1007,18 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "Google receives selected text only when Google Cloud is selected. The API key is stored in your desktop keyring. Restrict it to the Cloud Text-to-Speech API."
+                            text: qsTr("Google receives selected text only when Google Cloud is selected. The API key stays in Windows Credential Manager. Restrict it to the Cloud Text-to-Speech API.")
                         }
                         Button {
                             visible: settings.speechSource === "google"
                             flat: true
-                            text: "Open Google Cloud API credentials"
+                            text: qsTr("Open Google Cloud API credentials")
                             onClicked: Qt.openUrlExternally("https://console.cloud.google.com/apis/credentials")
                         }
                         Button {
                             visible: settings.speechSource === "google"
                             flat: true
-                            text: "Enable Cloud Text-to-Speech API"
+                            text: qsTr("Enable Cloud Text-to-Speech API")
                             onClicked: Qt.openUrlExternally("https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")
                         }
 
@@ -939,7 +1033,7 @@ ApplicationWindow {
                 }
 
                 GroupBox {
-                    title: "Playback"
+                    title: qsTr("Playback")
                     Layout.fillWidth: true
                     Layout.leftMargin: 20
                     Layout.rightMargin: 20
@@ -947,22 +1041,26 @@ ApplicationWindow {
                     ColumnLayout {
                         anchors.fill: parent
                         Button {
-                            text: "Play test voice"
+                            text: qsTr("Play test voice")
                             onClicked: backend.play_test_voice()
                         }
-                        ComboBox {
+                        RowLayout {
                             Layout.fillWidth: true
-                            model: [
-                                { value: "pauseResume", label: "Same selection: pause or resume" },
-                                { value: "restart", label: "Same selection: restart reading" }
-                            ]
-                            textRole: "label"
-                            valueRole: "value"
-                            currentIndex: settings.sameSelectionAction === "restart" ? 1 : 0
-                            onActivated: backend.update_setting("sameSelectionAction", currentValue)
+                            Label { text: qsTr("Same selection hotkey") }
+                            ComboBox {
+                                Layout.fillWidth: true
+                                model: [
+                                    { value: "pauseResume", label: qsTr("Pause or resume") },
+                                    { value: "restart", label: qsTr("Restart reading") }
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: settings.sameSelectionAction === "restart" ? 1 : 0
+                                onActivated: backend.update_setting("sameSelectionAction", currentValue)
+                            }
                         }
                         RowLayout {
-                            Label { text: "Popup dismisses after " + Math.round(dismissSlider.value) + " seconds" }
+                            Label { text: qsTr("Popup dismisses after %1 seconds").arg(Math.round(dismissSlider.value)) }
                             Slider {
                                 id: dismissSlider
                                 Layout.fillWidth: true
@@ -977,12 +1075,26 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             opacity: 0.75
-                            text: "Selections longer than about ten minutes are not read. Flow keeps selected text only while its playback popup is visible."
+                            text: qsTr("Selections longer than about ten minutes are not read.")
                         }
                     }
                 }
 
                 Item { Layout.preferredHeight: 6 }
+
+                GroupBox {
+                    title: qsTr("Privacy")
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 20
+                    Layout.rightMargin: 20
+
+                    Label {
+                        anchors.fill: parent
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 12
+                        text: qsTr("Flow keeps selected text only while the playback popup is visible. System language detection and voices are on-device. A cloud provider receives text only when that provider is selected.")
+                    }
+                }
             }
         }
     }

@@ -11,8 +11,10 @@ use std::{
     time::Duration,
 };
 
+use cpp::cpp;
 use qmetaobject::prelude::*;
 use qmetaobject::queued_callback;
+use qttypes::QPoint;
 use serde::Serialize;
 use tempfile::TempPath;
 use uuid::Uuid;
@@ -353,6 +355,16 @@ pub struct FlowBackend {
             self.start_plan(text, plan);
         }
     ),
+    check_for_updates: qt_method!(
+        fn check_for_updates(&mut self) {
+            self.start_update_check();
+        }
+    ),
+    cursor_position: qt_method!(
+        fn cursor_position(&self) -> QPoint {
+            cpp!(unsafe [] -> QPoint as "QPoint" { return QCursor::pos(); })
+        }
+    ),
     set_playback_speed: qt_method!(
         fn set_playback_speed(&mut self, speed: f64) {
             let clamped = speed.clamp(0.5, 4.0);
@@ -454,6 +466,8 @@ impl Default for FlowBackend {
             refresh_google_voices: Default::default(),
             play_test_voice: Default::default(),
             set_playback_speed: Default::default(),
+            check_for_updates: Default::default(),
+            cursor_position: Default::default(),
             playback_speed_changed: Default::default(),
             settings,
             playback_state: PlaybackState::Hidden,
@@ -1256,6 +1270,30 @@ impl FlowBackend {
         });
     }
 
+    fn start_update_check(&mut self) {
+        let pointer = QPointer::from(&*self);
+        let deliver = queued_callback(move |result: Result<String, String>| {
+            if let Some(backend) = pointer.as_pinned() {
+                let mut backend = backend.borrow_mut();
+                let message = match result {
+                    Ok(message) => message,
+                    Err(message) => message,
+                };
+                if backend.playback_state == PlaybackState::Hidden {
+                    backend.show_message(message);
+                } else {
+                    // Never interrupt active reading for an update check.
+                    backend.message = message.into();
+                    backend.message_changed();
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            let result = fetch_latest_release_message(env!("CARGO_PKG_VERSION"));
+            deliver(Ok(result));
+        });
+    }
+
     fn persist_settings(&mut self) {
         if settings::save(&self.settings).is_err() {
             self.configuration_error = "Flow could not save its settings.".into();
@@ -1308,6 +1346,41 @@ impl Drop for FlowBackend {
         if let Some(sender) = &self.system_speech_commands {
             let _ = sender.send(system_speech::Command::Shutdown);
         }
+    }
+}
+
+const UPDATE_API: &str = "https://api.github.com/repos/jdreioe/flow/releases/latest";
+
+#[derive(serde::Deserialize)]
+struct LatestRelease {
+    tag_name: String,
+}
+
+fn fetch_latest_release_message(current_version: &str) -> String {
+    let release: Result<LatestRelease, String> = (|| {
+        reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|_| "Flow could not check for updates.".to_owned())?
+            .get(UPDATE_API)
+            .header("User-Agent", "Flow")
+            .send()
+            .map_err(|_| "Flow could not check for updates.".to_owned())?
+            .error_for_status()
+            .map_err(|_| "Flow could not check for updates.".to_owned())?
+            .json()
+            .map_err(|_| "Flow could not check for updates.".to_owned())
+    })();
+    match release {
+        Ok(release) => {
+            let latest = release.tag_name.trim_start_matches('v');
+            if latest != current_version {
+                format!("Flow {latest} is available. Download it from github.com/jdreioe/flow/releases.")
+            } else {
+                "Flow is up to date.".to_owned()
+            }
+        }
+        Err(message) => message,
     }
 }
 
