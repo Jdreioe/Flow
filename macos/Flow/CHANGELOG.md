@@ -1,5 +1,14 @@
 # Flow changelog
 
+## 0.7
+
+Voice selection stays readable and playback stays responsive.
+
+- Hide the multi-speaker voice variants that third-party speech apps register so the system voice list shows one entry per voice.
+- Group Google Cloud voices by model family, such as Gemini-TTS, Chirp 3 HD, Studio, Journey, Polyglot, Neural2, and WaveNet.
+- Play a sample of any Google Cloud voice before selecting it for a language route.
+- Keep the playback popup responsive while words are highlighted, even when many system voices are installed.
+
 ## 0.6
 
 Playback is much easier to follow and control.
