@@ -64,6 +64,7 @@ $packArgs = @(
     '--packVersion', $env:VERSION,
     '--packDir', $staging,
     '--mainExe', 'flow-windows.exe',
+    '--icon', (Join-Path $root 'windows\assets\flow.ico'),
     '--outputDir', (Join-Path $dist 'Releases')
 )
 # Optional code signing: set VPK_SIGNPARAMS to signtool arguments, e.g.

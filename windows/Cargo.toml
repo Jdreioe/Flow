@@ -41,3 +41,4 @@ windows = { version = "0.62", features = [
 
 [build-dependencies]
 cpp_build = "0.5.10"
+winresource = "0.1"
