@@ -30,8 +30,12 @@ foreach ($candidate in @(
 }
 if (-not $windeployqt) { throw 'windeployqt not found; set QT_ROOT_DIR or install Qt 6 MSVC' }
 
+$qmlDir = Join-Path $root 'windows\qml'
 $stagedExe = Join-Path $staging 'flow-windows.exe'
-& $windeployqt --release --no-translations --dir $staging $stagedExe
+# --qmldir makes windeployqt scan Main.qml's imports so QML-only modules
+# (QtQuick.Controls, Qt.labs.platform tray icon, QtMultimedia) ship too;
+# without it the app installs but loads no UI at all.
+& $windeployqt --release --no-translations --qmldir $qmlDir --dir $staging $stagedExe
 if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
 
 $crtDir = $null
