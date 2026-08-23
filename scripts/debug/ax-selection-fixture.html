@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flow AX selection fixture</title>
+</head>
+<body>
+  <main id="selection">Flow accessibility selection fixture.</main>
+  <script>
+    function selectFixture() {
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById("selection"));
+      selection.addRange(range);
+    }
+
+    const mode = new URLSearchParams(window.location.search).get("mode");
+    if (mode === "late") {
+      setTimeout(selectFixture, 10000);
+    } else {
+      selectFixture();
+      if (mode !== "early-sticky") {
+        setTimeout(selectFixture, 5000);
+      }
+    }
+    document.title = "Flow AX fixture selected";
+  </script>
+</body>
+</html>

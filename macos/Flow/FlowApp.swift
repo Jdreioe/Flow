@@ -23,8 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: GlobalHotKey?
     private var popup: PlaybackPopupController?
     private var settingsWindow: SettingsWindowController?
+    private var applicationObservers: [NSObjectProtocol] = []
+#if DEBUG
+    private var debugCaptureObserver: NSObjectProtocol?
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+#if DEBUG
+        DebugAXTrace.reset()
+#endif
         popup = PlaybackPopupController(model: model)
         settingsWindow = SettingsWindowController(model: model)
         model.onPopupVisibilityChanged = { [weak self] isVisible in
@@ -47,8 +54,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onWhatsNewRequested = { [weak self] in
             self?.showWhatsNew()
         }
+        let workspaceNotifications = NSWorkspace.shared.notificationCenter
+        applicationObservers.append(workspaceNotifications.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            AccessibilitySelectionReader.prepare(application, reason: "activated")
+        })
+        applicationObservers.append(workspaceNotifications.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication else { return }
+            AccessibilitySelectionReader.prepare(application, reason: "launched")
+            // A launch notification can arrive before the app has finished
+            // installing its accessibility endpoint.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !application.isTerminated else { return }
+                AccessibilitySelectionReader.prepare(application, reason: "launch_retry_500ms")
+            }
+        })
+        AccessibilitySelectionReader.prepareFrontmostApplication(reason: "flow_startup")
+#if DEBUG
+        let startupApplication = NSWorkspace.shared.frontmostApplication
+        Task.detached {
+            for attempt in 1 ... 40 {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard let startupApplication, !startupApplication.isTerminated else { return }
+                if AccessibilitySelectionReader.prepare(
+                    startupApplication,
+                    reason: "debug_startup_retry_\(attempt)"
+                ) {
+                    return
+                }
+            }
+        }
+        debugCaptureObserver = DistributedNotificationCenter.default().addObserver(
+            forName: DebugAXTrace.notificationName,
+            object: nil,
+            queue: .main
+        ) { [weak model] _ in
+            DebugAXTrace.record("capture_notification_received")
+            model?.readSelectionFromHotKey()
+        }
+#endif
         installHotKey(model.settings.hotKey)
         ChangelogWindowController.presentAfterUpdate()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        for observer in applicationObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+#if DEBUG
+        if let debugCaptureObserver {
+            DistributedNotificationCenter.default().removeObserver(debugCaptureObserver)
+        }
+#endif
     }
 
     private func showWhatsNew() {
@@ -242,10 +310,10 @@ final class FlowModel: ObservableObject {
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
             showMessage("Flow needs Accessibility permission to read selected text.")
-        case .failure(.noSelectedText(let diagnostics)):
-            showMessage("Select some text, then press \(settings.hotKey.title). \(diagnostics)")
-        case .failure(.unavailable(let underlying, let diagnostics)):
-            showMessage("\(Self.captureFailureMessage(underlying)) \(diagnostics)")
+        case .failure(.noSelectedText):
+            showMessage("Select some text, then press \(settings.hotKey.title).")
+        case .failure(.unavailable(let underlying)):
+            showMessage(Self.captureFailureMessage(underlying))
         case .success(let text):
             let normalized = Self.normalized(text)
             if normalized.isEmpty {
