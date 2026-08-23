@@ -24,14 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popup: PlaybackPopupController?
     private var settingsWindow: SettingsWindowController?
     private var applicationObservers: [NSObjectProtocol] = []
-#if DEBUG
-    private var debugCaptureObserver: NSObjectProtocol?
-#endif
+    private let accessibilityPreparer = AccessibilityPreparationCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-#if DEBUG
-        DebugAXTrace.reset()
-#endif
         popup = PlaybackPopupController(model: model)
         settingsWindow = SettingsWindowController(model: model)
         model.onPopupVisibilityChanged = { [weak self] isVisible in
@@ -59,51 +54,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { notification in
-            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                as? NSRunningApplication
-            AccessibilitySelectionReader.prepare(application, reason: "activated")
+        ) { [accessibilityPreparer] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication else { return }
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         })
         applicationObservers.append(workspaceNotifications.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
-        ) { notification in
+        ) { [accessibilityPreparer] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication else { return }
-            AccessibilitySelectionReader.prepare(application, reason: "launched")
-            // A launch notification can arrive before the app has finished
-            // installing its accessibility endpoint.
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !application.isTerminated else { return }
-                AccessibilitySelectionReader.prepare(application, reason: "launch_retry_500ms")
-            }
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         })
-        AccessibilitySelectionReader.prepareFrontmostApplication(reason: "flow_startup")
-#if DEBUG
-        let startupApplication = NSWorkspace.shared.frontmostApplication
-        Task.detached {
-            for attempt in 1 ... 40 {
-                try? await Task.sleep(for: .milliseconds(50))
-                guard let startupApplication, !startupApplication.isTerminated else { return }
-                if AccessibilitySelectionReader.prepare(
-                    startupApplication,
-                    reason: "debug_startup_retry_\(attempt)"
-                ) {
-                    return
-                }
-            }
+        if let application = NSWorkspace.shared.frontmostApplication {
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         }
-        debugCaptureObserver = DistributedNotificationCenter.default().addObserver(
-            forName: DebugAXTrace.notificationName,
-            object: nil,
-            queue: .main
-        ) { [weak model] _ in
-            DebugAXTrace.record("capture_notification_received")
-            model?.readSelectionFromHotKey()
-        }
-#endif
         installHotKey(model.settings.hotKey)
         ChangelogWindowController.presentAfterUpdate()
     }
@@ -112,11 +82,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for observer in applicationObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
-#if DEBUG
-        if let debugCaptureObserver {
-            DistributedNotificationCenter.default().removeObserver(debugCaptureObserver)
-        }
-#endif
     }
 
     private func showWhatsNew() {
@@ -137,7 +102,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.hotKeyError = "\(preset.title) is already in use. Choose another Flow shortcut."
         }
     }
+}
 
+private actor AccessibilityPreparationCoordinator {
+    private static let attempts = 20
+    private static let retryDelay = Duration.milliseconds(100)
+    private var pendingPIDs: Set<pid_t> = []
+
+    func prepare(pid: pid_t) async {
+        guard pid != ProcessInfo.processInfo.processIdentifier else { return }
+        guard pendingPIDs.insert(pid).inserted else { return }
+        defer { pendingPIDs.remove(pid) }
+
+        for attempt in 0..<Self.attempts {
+            guard let application = NSRunningApplication(processIdentifier: pid),
+                  !application.isTerminated else { return }
+            if AccessibilitySelectionReader.prepare(pid: pid) {
+                return
+            }
+            guard attempt + 1 < Self.attempts else { return }
+            try? await Task.sleep(for: Self.retryDelay)
+        }
+    }
 }
 
 @MainActor
@@ -188,6 +174,8 @@ final class FlowModel: ObservableObject {
     private let azureSpeech = AzureSpeechEngine()
     private let googleSpeech = GoogleSpeechEngine()
     private var activeSpeech: FlowSpeechEngine?
+    private var previewPlayer: AVAudioPlayer?
+    private var previewTask: Task<Void, Never>?
     private var dismissTask: Task<Void, Never>?
 
     init() {
@@ -270,6 +258,37 @@ final class FlowModel: ObservableObject {
         state = .playing
     }
 
+    func previewGoogleVoice(named voiceName: String?, languageTag: String) {
+        guard let apiKey = GoogleCredentialsStore.load() else { return }
+        if activeSpeech === googleSpeech { stop() }
+        previewTask?.cancel()
+        previewPlayer?.stop()
+        var route = settings.defaultLanguageRoute
+        route.languageTag = languageTag
+        route.googleVoiceName = voiceName
+        route.playbackSpeed = nil
+        let plan = LanguageFlow.Plan(sentences: [LanguageFlow.Sentence(
+            text: "Hello, this is what Flow sounds like with this voice.",
+            detectedLanguageTag: languageTag,
+            route: route,
+            needsReview: false,
+            detectedButUnconfigured: false,
+        )])
+        previewTask = Task {
+            do {
+                let audio = try await GoogleSpeechEngine.synthesize(plan: plan, apiKey: apiKey, includeWordTimings: false)
+                try Task.checkCancellation()
+                guard let segment = audio.first else { return }
+                let player = try AVAudioPlayer(data: segment.data)
+                player.enableRate = true
+                player.rate = min(max(settings.playbackSpeed, 0.5), 4)
+                previewPlayer = player
+                player.play()
+            } catch is CancellationError {
+            } catch {}
+        }
+    }
+
     func pauseOrResume() {
         switch state {
         case .playing:
@@ -292,6 +311,8 @@ final class FlowModel: ObservableObject {
     func stop() {
         dismissTask?.cancel()
         activeSpeech?.stop()
+        previewTask?.cancel()
+        previewPlayer?.stop()
         currentWordRange = nil
         currentReadingOffset = nil
         selectedText = ""
@@ -312,6 +333,11 @@ final class FlowModel: ObservableObject {
             showMessage("Flow needs Accessibility permission to read selected text.")
         case .failure(.noSelectedText):
             showMessage("Select some text, then press \(settings.hotKey.title).")
+        case .failure(.selectionNeedsRefresh):
+            showMessage(
+                "Zen has not exposed this selection to macOS yet. "
+                    + "Select the text again, then press \(settings.hotKey.title)."
+            )
         case .failure(.unavailable(let underlying)):
             showMessage(Self.captureFailureMessage(underlying))
         case .success(let text):
