@@ -28,7 +28,13 @@ pub struct SystemVoice {
 }
 
 pub enum Command {
-    Play { generation: u64, plan: Plan },
+    Play {
+        generation: u64,
+        plan: Plan,
+        /// UTF-16 offset of each sentence within the popup's playback text,
+        /// matching the coordinate space of the cloud word timings.
+        sentence_bases: Vec<u32>,
+    },
     Pause,
     Resume,
     Stop,
@@ -39,11 +45,14 @@ pub struct Callbacks {
     pub voices_changed: Box<dyn Fn(Vec<SystemVoice>) + Send>,
     pub finished: Box<dyn Fn(u64) + Send>,
     pub failed: Box<dyn Fn((u64, String)) + Send>,
+    pub word_range: Box<dyn Fn((u64, u32, u32)) + Send>,
 }
 
 struct Playback {
     generation: u64,
     sentences: VecDeque<Sentence>,
+    bases: VecDeque<u32>,
+    base: u32,
     current_message: Option<u32>,
 }
 
@@ -54,7 +63,7 @@ pub fn start(callbacks: Callbacks) -> Sender<Command> {
 }
 
 fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
-    let (mut client, voices) = match initialize() {
+    let (mut client, voices, ssml) = match initialize() {
         Ok(connection) => connection,
         Err(error) => {
             run_unavailable(receiver, callbacks, error);
@@ -67,14 +76,20 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
     loop {
         while let Ok(command) = receiver.try_recv() {
             match command {
-                Command::Play { generation, plan } => {
+                Command::Play {
+                    generation,
+                    plan,
+                    sentence_bases,
+                } => {
                     cancel(&mut client);
                     playback = Some(Playback {
                         generation,
                         sentences: plan.sentences.into(),
+                        bases: sentence_bases.into(),
+                        base: 0,
                         current_message: None,
                     });
-                    speak_next(&mut client, &voices, &mut playback, &callbacks);
+                    speak_next(&mut client, &voices, ssml, &mut playback, &callbacks);
                 }
                 Command::Pause => {
                     if playback.is_some() {
@@ -99,10 +114,13 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
         }
 
         match client.receive() {
+            Ok(Response::EventIndexMark(event, mark)) => {
+                report_mark(&event, &mark, &playback, &callbacks);
+            }
             Ok(Response::EventEnd(event)) => {
                 let message_id = event.message.parse::<u32>().ok();
                 if playback.as_ref().and_then(|item| item.current_message) == message_id {
-                    speak_next(&mut client, &voices, &mut playback, &callbacks);
+                    speak_next(&mut client, &voices, ssml, &mut playback, &callbacks);
                 }
             }
             Ok(Response::EventCanceled(_)) => {}
@@ -123,7 +141,7 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
     }
 }
 
-fn initialize() -> Result<(Client<UnixStream>, Vec<SynthesisVoice>), String> {
+fn initialize() -> Result<(Client<UnixStream>, Vec<SynthesisVoice>, bool), String> {
     let mut builder = Builder::new();
     builder.timeout(Duration::from_millis(100));
     let mut client = match builder.build() {
@@ -180,7 +198,14 @@ fn initialize() -> Result<(Client<UnixStream>, Vec<SynthesisVoice>), String> {
         matches!(response, Response::NotificationSet)
     })?;
 
-    Ok((client, voices))
+    // SSML mode lets Flow embed index marks before every word; when the
+    // server refuses it, playback still works but without word highlights.
+    let ssml = client
+        .set_ssml_mode(true)
+        .map(|client| expect(client, |response| matches!(response, Response::SsmlModeSet)))
+        .is_ok();
+
+    Ok((client, voices, ssml))
 }
 
 fn run_unavailable(receiver: Receiver<Command>, callbacks: Callbacks, error: String) {
@@ -197,6 +222,7 @@ fn run_unavailable(receiver: Receiver<Command>, callbacks: Callbacks, error: Str
 fn speak_next(
     client: &mut Client<UnixStream>,
     voices: &[SynthesisVoice],
+    ssml: bool,
     playback: &mut Option<Playback>,
     callbacks: &Callbacks,
 ) {
@@ -209,9 +235,18 @@ fn speak_next(
         (callbacks.finished)(generation);
         return;
     };
+    active.base = active.bases.pop_front().unwrap_or(0);
 
-    match configure(client, voices, &sentence).and_then(|()| speak(client, &sentence.text)) {
-        Ok(message_id) => active.current_message = Some(message_id),
+    match configure(client, voices, &sentence).and_then(|()| speak(client, &sentence.text, ssml)) {
+        Ok(message_id) => {
+            active.current_message = Some(message_id);
+            // Always report the sentence range so the popup can show reading
+            // position; modules with SSML support refine it to word level
+            // through index marks.
+            let start = active.base;
+            let end = start + sentence.text.encode_utf16().count() as u32;
+            (callbacks.word_range)((active.generation, start, end));
+        }
         Err(error) => {
             let generation = active.generation;
             *playback = None;
@@ -267,7 +302,7 @@ fn configure(
     Ok(())
 }
 
-fn speak(client: &mut Client<UnixStream>, text: &str) -> Result<u32, String> {
+fn speak(client: &mut Client<UnixStream>, text: &str, ssml: bool) -> Result<u32, String> {
     client.speak().map_err(client_error)?;
     expect(client, |response| {
         matches!(response, Response::ReceivingData)
@@ -277,8 +312,65 @@ fn speak(client: &mut Client<UnixStream>, text: &str) -> Result<u32, String> {
         .lines()
         .collect::<Vec<_>>()
         .join(" ");
-    client.send_line(&normalized).map_err(client_error)?;
+    let payload = if ssml {
+        ssml_with_word_marks(&normalized)
+    } else {
+        normalized
+    };
+    client.send_line(&payload).map_err(client_error)?;
     receive_message_id(client)
+}
+
+/// Wraps the sentence in SSML with an index mark before every word so Speech
+/// Dispatcher reports progress. Offsets are UTF-16 units, matching QML string
+/// indexing and the cloud word timings.
+fn ssml_with_word_marks(text: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let mut payload = String::from("<speak>");
+    let mut offset = 0usize;
+    for piece in text.split_word_bounds() {
+        let end = offset + piece.encode_utf16().count();
+        if piece.chars().any(char::is_alphanumeric) {
+            payload.push_str(&format!("<mark name=\"{offset}:{end}\"/>"));
+        }
+        payload.push_str(&escape_ssml(piece));
+        offset = end;
+    }
+    payload.push_str("</speak>");
+    payload
+}
+
+fn escape_ssml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn parse_mark(mark: &str) -> Option<(u32, u32)> {
+    let (start, end) = mark.split_once(':')?;
+    Some((start.parse().ok()?, end.parse().ok()?))
+}
+
+fn report_mark(
+    event: &ssip_client_async::EventId,
+    mark: &str,
+    playback: &Option<Playback>,
+    callbacks: &Callbacks,
+) {
+    let Some(active) = playback else {
+        return;
+    };
+    let Some(message_id) = active.current_message else {
+        return;
+    };
+    if event.message.parse::<u32>().ok() != Some(message_id) {
+        return;
+    }
+    let Some((start, end)) = parse_mark(mark) else {
+        return;
+    };
+    (callbacks.word_range)((active.generation, active.base + start, active.base + end));
 }
 
 fn cancel(client: &mut Client<UnixStream>) {
@@ -390,5 +482,82 @@ mod tests {
         ];
 
         assert_eq!(visible_voices(&voices).len(), 2);
+    }
+
+    #[test]
+    fn ssml_marks_use_utf16_offsets_and_escape_markup() {
+        // Word bounds: ["a", " ", "<", "b", ">", " ", "é"]; only word-like
+        // pieces get marks and markup characters are escaped.
+        assert_eq!(
+            ssml_with_word_marks("a <b> é"),
+            "<speak><mark name=\"0:1\"/>a &lt;<mark name=\"3:4\"/>b&gt; <mark name=\"6:7\"/>é</speak>"
+        );
+    }
+
+    #[test]
+    fn parse_mark_reads_offsets() {
+        assert_eq!(parse_mark("12:17"), Some((12, 17)));
+        assert_eq!(parse_mark("x:17"), None);
+        assert_eq!(parse_mark("12"), None);
+    }
+
+    /// Live round-trip against Speech Dispatcher: speaking with SSML marks
+    /// must deliver word ranges. Needs speech-dispatcher plus an output
+    /// module and audio device, so run it explicitly:
+    /// cargo test -p flow-linux -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires a working Speech Dispatcher and audio device"]
+    fn dispatcher_reports_word_ranges_for_ssml_marks() {
+        use flow_core::{language, model::Settings};
+        use std::sync::{Arc, Mutex};
+
+        let (start_tx, start_rx) = std::sync::mpsc::channel();
+        let ranges: Arc<Mutex<Vec<(u32, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&ranges);
+        let commands = start(Callbacks {
+            voices_changed: Box::new(|_| {}),
+            finished: Box::new(move |_| {
+                let _ = start_tx.send(());
+            }),
+            failed: Box::new(|(generation, message)| {
+                panic!("system speech failed ({generation}): {message}");
+            }),
+            word_range: Box::new(move |(_, start, end)| {
+                observed.lock().unwrap().push((start, end));
+            }),
+        });
+
+        let settings = Settings::default();
+        let text = "Flow highlights every spoken word";
+        let plan = language::single_sentence(text, &settings);
+        commands
+            .send(Command::Play {
+                generation: 1,
+                plan,
+                sentence_bases: vec![0],
+            })
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if start_rx.recv_timeout(Duration::from_millis(500)).is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "playback did not finish within 30 seconds"
+            );
+        }
+        commands.send(Command::Stop).unwrap();
+
+        let seen = ranges.lock().unwrap().clone();
+        println!("received word ranges: {seen:?}");
+        // The sentence range is always reported; modules with SSML support add
+        // per-word index marks on top.
+        assert!(
+            seen.contains(&(0, text.encode_utf16().count() as u32)),
+            "expected the sentence range, got {seen:?}"
+        );
+        assert!(seen.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
 }

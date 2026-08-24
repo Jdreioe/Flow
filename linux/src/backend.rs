@@ -106,6 +106,14 @@ pub struct FlowBackend {
     playback_speed: qt_property!(f64; NOTIFY playback_speed_changed),
     playback_speed_changed: qt_signal!(),
 
+    // UTF-16 offsets into playback_text for the word being spoken, or -1
+    // when nothing is highlighted. System voices report through Speech
+    // Dispatcher index marks; cloud playback reports from the QML timer.
+    current_word_start: qt_property!(i32; NOTIFY current_word_start_changed),
+    current_word_start_changed: qt_signal!(),
+    current_word_end: qt_property!(i32; NOTIFY current_word_end_changed),
+    current_word_end_changed: qt_signal!(),
+
     start: qt_method!(
         fn start(&mut self) {
             self.start_services();
@@ -114,6 +122,11 @@ pub struct FlowBackend {
     read_selection: qt_method!(
         fn read_selection(&mut self) {
             self.request_selection();
+        }
+    ),
+    report_word_range: qt_method!(
+        fn report_word_range(&mut self, start: i32, end: i32) {
+            self.set_word_range(start, end);
         }
     ),
     open_settings: qt_method!(
@@ -429,6 +442,7 @@ impl Default for FlowBackend {
             show_settings: Default::default(),
             start: Default::default(),
             read_selection: Default::default(),
+            report_word_range: Default::default(),
             open_settings: Default::default(),
             pause_or_resume: Default::default(),
             stop: Default::default(),
@@ -463,6 +477,10 @@ impl Default for FlowBackend {
             queued_segment_speeds: VecDeque::new(),
             playback_speed,
             playback_speed_changed: Default::default(),
+            current_word_start: -1,
+            current_word_start_changed: Default::default(),
+            current_word_end: -1,
+            current_word_end_changed: Default::default(),
             shortcut_commands: None,
             system_speech_commands: None,
             services_started: false,
@@ -534,10 +552,27 @@ impl FlowBackend {
                 backend.borrow_mut().show_message(message);
             }
         });
+        let word_pointer = QPointer::from(&*self);
+        let word_generation = Arc::clone(&self.playback_generation);
+        let word_range = queued_callback(move |(generation, start, end): (u64, u32, u32)| {
+            if word_generation.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            if let Some(backend) = word_pointer.as_pinned() {
+                let mut backend = backend.borrow_mut();
+                if matches!(
+                    backend.playback_state,
+                    PlaybackState::Playing | PlaybackState::Paused
+                ) {
+                    backend.set_word_range(start as i32, end as i32);
+                }
+            }
+        });
         self.system_speech_commands = Some(system_speech::start(system_speech::Callbacks {
             voices_changed: Box::new(voices_changed),
             finished: Box::new(finished),
             failed: Box::new(failed),
+            word_range: Box::new(word_range),
         }));
 
         if self.settings.azure_endpoint.is_some() {
@@ -634,6 +669,7 @@ impl FlowBackend {
         self.stop_active_playback();
         self.playback_text = playback_text(&plan, &text).into();
         self.playback_text_changed();
+        self.set_word_range(-1, -1);
         self.selected_text = text;
         self.plan = Some(plan);
         self.manual_route_needed = true;
@@ -690,8 +726,11 @@ impl FlowBackend {
             self.playback_speed = self.settings.playback_speed;
             self.playback_speed_changed();
         }
-        self.playback_text = playback_text(&plan, &text).into();
+        let (display, sentence_bases) = playback_layout(&plan, &text);
+        self.playback_text = display.into();
         self.playback_text_changed();
+        self.set_word_range(-1, -1);
+        self.selected_text = text;
         self.plan = Some(plan.clone());
         self.refresh_detected_languages();
         self.set_state(PlaybackState::Preparing);
@@ -703,7 +742,14 @@ impl FlowBackend {
                 self.set_state(PlaybackState::Playing);
                 let sent = self.system_speech_commands.as_ref().is_some_and(|sender| {
                     sender
-                        .send(system_speech::Command::Play { generation, plan })
+                        .send(system_speech::Command::Play {
+                            generation,
+                            plan,
+                            sentence_bases: sentence_bases
+                                .iter()
+                                .map(|base| *base as u32)
+                                .collect(),
+                        })
                         .is_ok()
                 });
                 if !sent {
@@ -882,6 +928,7 @@ impl FlowBackend {
         self.selected_text.clear();
         self.plan = None;
         self.refresh_detected_languages();
+        self.set_word_range(-1, -1);
         self.set_state(PlaybackState::Hidden);
         self.set_popup_visible(false);
     }
@@ -917,6 +964,7 @@ impl FlowBackend {
         self.selected_text.clear();
         self.plan = None;
         self.refresh_detected_languages();
+        self.set_word_range(-1, -1);
         self.message = message.into().into();
         self.message_changed();
         self.set_state(PlaybackState::Message);
@@ -1300,6 +1348,16 @@ impl FlowBackend {
         self.text_language_override = value.unwrap_or_default().into();
         self.text_language_override_changed();
     }
+
+    fn set_word_range(&mut self, start: i32, end: i32) {
+        if self.current_word_start == start && self.current_word_end == end {
+            return;
+        }
+        self.current_word_start = start;
+        self.current_word_start_changed();
+        self.current_word_end = end;
+        self.current_word_end_changed();
+    }
 }
 
 impl Drop for FlowBackend {
@@ -1318,25 +1376,24 @@ fn normalize(text: &str) -> String {
 }
 
 /// Retains source paragraph breaks without changing the one-code-unit sentence
-/// separators used by the Google word-boundary offsets.
-fn playback_text(plan: &Plan, source: &str) -> String {
+/// separators used by the word-boundary offsets. Alongside the display text it
+/// returns each sentence's UTF-16 offset, the coordinate space shared by the
+/// Google timings and Speech Dispatcher index marks.
+fn playback_layout(plan: &Plan, source: &str) -> (String, Vec<usize>) {
     if plan.sentences.len() < 2 {
-        return plan
-            .sentences
-            .first()
-            .map_or_else(|| source.into(), |sentence| sentence.text.clone());
+        return (
+            plan.sentences
+                .first()
+                .map_or_else(|| source.into(), |sentence| sentence.text.clone()),
+            vec![0],
+        );
     }
 
     let mut ranges = Vec::with_capacity(plan.sentences.len());
     let mut search_start = 0;
     for sentence in &plan.sentences {
         let Some(offset) = source[search_start..].find(&sentence.text) else {
-            return plan
-                .sentences
-                .iter()
-                .map(|sentence| sentence.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
+            return joined_sentences(plan);
         };
         let start = search_start + offset;
         let end = start + sentence.text.len();
@@ -1345,7 +1402,9 @@ fn playback_text(plan: &Plan, source: &str) -> String {
     }
 
     let mut text = String::new();
+    let mut offsets = Vec::with_capacity(plan.sentences.len());
     for (index, sentence) in plan.sentences.iter().enumerate() {
+        offsets.push(text.encode_utf16().count());
         text.push_str(&sentence.text);
         if index + 1 < plan.sentences.len() {
             let gap = &source[ranges[index].end..ranges[index + 1].start];
@@ -1356,7 +1415,27 @@ fn playback_text(plan: &Plan, source: &str) -> String {
             });
         }
     }
-    text
+    (text, offsets)
+}
+
+fn playback_text(plan: &Plan, source: &str) -> String {
+    playback_layout(plan, source).0
+}
+
+fn joined_sentences(plan: &Plan) -> (String, Vec<usize>) {
+    let text = plan
+        .sentences
+        .iter()
+        .map(|sentence| sentence.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut offsets = Vec::with_capacity(plan.sentences.len());
+    let mut offset = 0usize;
+    for sentence in &plan.sentences {
+        offsets.push(offset);
+        offset += sentence.text.encode_utf16().count() + 1;
+    }
+    (text, offsets)
 }
 
 fn nonempty(value: &str) -> Option<String> {

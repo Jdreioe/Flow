@@ -18,8 +18,12 @@ ApplicationWindow {
     property var detectedLanguages: JSON.parse(backend.detected_languages_json)
     property bool cloudActive: false
     property var wordTimings: []
-    property int currentWordStart: -1
-    property int currentWordEnd: -1
+
+    // Matches the Windows popup: preparing, playing, paused, and the language
+    // check all count as active playback.
+    property bool activePlaybackState: backend.state === "preparing"
+        || backend.state === "playing" || backend.state === "paused"
+        || backend.state === "awaitingRoute"
 
     function escapedHtml(value) {
         return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -27,17 +31,19 @@ ApplicationWindow {
 
     function highlightedText() {
         const text = backend.playback_text
-        if (currentWordStart < 0 || currentWordEnd > text.length)
+        const start = backend.current_word_start
+        const end = backend.current_word_end
+        if (start < 0 || end > text.length)
             return escapedHtml(text)
-        const nominalStart = Math.max(0, currentWordStart - 24)
+        const nominalStart = Math.max(0, start - 24)
         // Once playback crosses a paragraph break, drop the completed paragraph
         // so the active word remains in the forward-looking part of the popup.
-        const paragraphStart = text.lastIndexOf("\n", currentWordStart - 1) + 1
+        const paragraphStart = text.lastIndexOf("\n", start - 1) + 1
         const visibleStart = Math.max(nominalStart, paragraphStart)
-        const visibleEnd = Math.min(text.length, currentWordEnd + 220)
-        return "<span style='color:#888'>" + escapedHtml(text.slice(visibleStart, currentWordStart))
-            + "</span><b>" + escapedHtml(text.slice(currentWordStart, currentWordEnd))
-            + "</b>" + escapedHtml(text.slice(currentWordEnd, visibleEnd))
+        const visibleEnd = Math.min(text.length, end + 220)
+        return "<span style='color:#888'>" + escapedHtml(text.slice(visibleStart, start))
+            + "</span><b>" + escapedHtml(text.slice(start, end))
+            + "</b>" + escapedHtml(text.slice(end, visibleEnd))
     }
 
     function cloudPlayer() {
@@ -140,6 +146,19 @@ ApplicationWindow {
 
     Connections {
         target: backend
+        function onPopup_visible_changed() {
+            popup.syncVisibility()
+        }
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Cancel]
+        enabled: popup.visible && backend.state !== "hidden"
+        onActivated: backend.stop()
+    }
+
+    Connections {
+        target: backend
 
         function onPlay_cloud(fileUrl, wordTimingsJson, rate) {
             cloudPlayerLoader.active = true
@@ -151,8 +170,7 @@ ApplicationWindow {
             player.source = fileUrl
             player.playbackRate = rate
             root.wordTimings = JSON.parse(wordTimingsJson)
-            root.currentWordStart = -1
-            root.currentWordEnd = -1
+            backend.report_word_range(-1, -1)
             cloudActive = true
             player.play()
         }
@@ -238,8 +256,7 @@ ApplicationWindow {
                 if (root.wordTimings[index].timeSeconds <= seconds) active = root.wordTimings[index]
                 else break
             }
-            root.currentWordStart = active ? active.start : -1
-            root.currentWordEnd = active ? active.end : -1
+            backend.report_word_range(active ? active.start : -1, active ? active.end : -1)
         }
     }
 
@@ -305,7 +322,7 @@ ApplicationWindow {
 
     Window {
         id: popup
-        visible: backend.popup_visible
+        visible: false
         width: 520
         height: 250
         minimumWidth: 420
@@ -316,13 +333,16 @@ ApplicationWindow {
 
         property bool showLanguages: false
 
-        // Screen is only valid once the window is mapped, so bind the
-        // position to visibility instead of evaluating it up front.
-        onVisibleChanged: {
-            if (!visible)
-                return
-            x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
-            y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+        // Imperative show/hide keeps the window manager from breaking the
+        // visibility binding, and lets the popup re-center on every appearance.
+        function syncVisibility() {
+            if (backend.popup_visible) {
+                x = Screen.virtualX + Math.round((Screen.desktopAvailableWidth - width) / 2)
+                y = Screen.virtualY + Math.round((Screen.desktopAvailableHeight - height) / 2)
+                show()
+            } else {
+                hide()
+            }
         }
 
         Rectangle {
@@ -387,19 +407,20 @@ ApplicationWindow {
                 }
 
                 Label {
-                    visible: backend.state === "playing" || backend.state === "paused"
+                    visible: backend.state !== "message" && backend.playback_text.length > 0
                     Layout.fillWidth: true
                     maximumLineCount: 4
                     elide: Text.ElideRight
                     wrapMode: Text.WordWrap
-                    textFormat: Text.RichText
-                    text: root.highlightedText()
+                    textFormat: settings.wordHighlightingEnabled ? Text.RichText : Text.PlainText
+                    text: settings.wordHighlightingEnabled
+                        ? root.highlightedText()
+                        : root.escapedHtml(backend.playback_text)
                     Accessible.name: "Selected text being read"
                 }
 
                 RowLayout {
-                    visible: (backend.state === "playing" || backend.state === "paused")
-                        && root.cloudActive
+                    visible: root.activePlaybackState
                     Layout.fillWidth: true
                     spacing: 10
 
@@ -424,7 +445,6 @@ ApplicationWindow {
                                 backend.set_playback_speed(speedSlider.value)
                         }
                         Accessible.name: qsTr("Playback speed")
-                        Accessible.value: Math.round(speedSlider.value * 100) + "%"
                     }
                     Label {
                         text: Number(backend.playback_speed.toFixed(2)).toString() + "×"
@@ -625,7 +645,6 @@ ApplicationWindow {
                             onActivated: backend.update_setting("hotKey", currentValue)
                         }
                         CheckBox {
-                            visible: settings.speechSource === "google"
                             text: "Highlight spoken words"
                             checked: settings.wordHighlightingEnabled
                             onToggled: backend.update_setting("wordHighlightingEnabled", checked ? "true" : "false")
