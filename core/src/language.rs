@@ -105,6 +105,9 @@ pub fn plan_with_override(text: &str, settings: &Settings, override_tag: Option<
 }
 
 fn detected_plan(text: &str, settings: &Settings) -> Plan {
+    if !settings.language_switching_enabled {
+        return unswitched_plan(text, settings);
+    }
     let detector = detector();
     let mut sentences = Vec::new();
 
@@ -126,12 +129,15 @@ fn detected_plan(text: &str, settings: &Settings) -> Plan {
                 return None;
             }
             let tag = language_tag(*language);
-            settings.language_route(tag).map(|route| (tag.to_owned(), route))
+            settings
+                .language_route(tag)
+                .map(|route| (tag.to_owned(), route))
         });
-        let detected_tag = configured
-            .as_ref()
-            .map(|(tag, _)| tag.clone())
-            .or_else(|| confidence_values.first().map(|(language, _)| language_tag(*language).to_owned()));
+        let detected_tag = configured.as_ref().map(|(tag, _)| tag.clone()).or_else(|| {
+            confidence_values
+                .first()
+                .map(|(language, _)| language_tag(*language).to_owned())
+        });
         let route = configured.map(|(_, route)| route);
         let configured = route.is_some();
         let needs_review = !configured;
@@ -145,6 +151,31 @@ fn detected_plan(text: &str, settings: &Settings) -> Plan {
         });
     }
 
+    if sentences.is_empty() {
+        single_sentence(text, settings)
+    } else {
+        Plan { sentences }
+    }
+}
+
+/// Language Flow is switched off: every sentence reads with the default route
+/// and detection never blocks playback.
+fn unswitched_plan(text: &str, settings: &Settings) -> Plan {
+    let mut sentences = Vec::new();
+    for raw_sentence in text.split_sentence_bounds() {
+        let sentence = raw_sentence.trim();
+        if sentence.is_empty() {
+            continue;
+        }
+        sentences.push(Sentence {
+            id: Uuid::new_v4(),
+            text: sentence.into(),
+            detected_language_tag: None,
+            route: settings.default_language_route(),
+            needs_review: false,
+            detected_but_unconfigured: false,
+        });
+    }
     if sentences.is_empty() {
         single_sentence(text, settings)
     } else {
@@ -208,8 +239,10 @@ fn shares_automatic_language_group(detected: Language, candidate: Language) -> b
 
     matches!(
         (detected, candidate),
-        (Language::Danish | Language::Swedish | Language::Bokmal,
-         Language::Danish | Language::Swedish | Language::Bokmal)
+        (
+            Language::Danish | Language::Swedish | Language::Bokmal,
+            Language::Danish | Language::Swedish | Language::Bokmal
+        )
     )
 }
 
@@ -246,7 +279,10 @@ mod tests {
         };
 
         let plan = plan("Det er en god dag", &settings);
-        assert_eq!(plan.sentences[0].detected_language_tag.as_deref(), Some("da-DK"));
+        assert_eq!(
+            plan.sentences[0].detected_language_tag.as_deref(),
+            Some("da-DK")
+        );
         assert_eq!(plan.sentences[0].route.language_tag, "da-DK");
         assert!(!plan.needs_language_check());
     }
@@ -260,7 +296,10 @@ mod tests {
         };
 
         let plan = plan("Ich heiße Jonas", &settings);
-        assert_eq!(plan.sentences[0].detected_language_tag.as_deref(), Some("de-DE"));
+        assert_eq!(
+            plan.sentences[0].detected_language_tag.as_deref(),
+            Some("de-DE")
+        );
         assert!(plan.needs_language_check());
     }
 
@@ -299,13 +338,14 @@ mod tests {
 
         let plan = plan_with_override("Hello. Goddag.", &settings, Some("da-DK"));
         assert_eq!(plan.sentences.len(), 2);
-        assert!(plan
-            .sentences
-            .iter()
-            .all(|sentence| sentence.route.language_tag == "da-DK"
-                && sentence.detected_language_tag.as_deref() == Some("da-DK")
-                && !sentence.needs_review
-                && !sentence.detected_but_unconfigured));
+        assert!(
+            plan.sentences
+                .iter()
+                .all(|sentence| sentence.route.language_tag == "da-DK"
+                    && sentence.detected_language_tag.as_deref() == Some("da-DK")
+                    && !sentence.needs_review
+                    && !sentence.detected_but_unconfigured)
+        );
 
         let unrouted = plan_with_override("Hello.", &settings, Some("fr-FR"));
         assert_eq!(unrouted.sentences[0].route.language_tag, "en-US");
@@ -315,13 +355,14 @@ mod tests {
     #[test]
     fn without_review_clears_every_flag() {
         let settings = Settings::default();
-        let plan = plan_with_override("Denne sætning er på dansk.", &settings, None)
-            .without_review();
+        let plan =
+            plan_with_override("Denne sætning er på dansk.", &settings, None).without_review();
 
         assert!(!plan.needs_language_check());
-        assert!(plan
-            .sentences
-            .iter()
-            .all(|sentence| !sentence.detected_but_unconfigured));
+        assert!(
+            plan.sentences
+                .iter()
+                .all(|sentence| !sentence.detected_but_unconfigured)
+        );
     }
 }
