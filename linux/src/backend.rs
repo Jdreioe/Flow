@@ -606,6 +606,11 @@ impl FlowBackend {
         }
         self.services_started = true;
 
+        // Chromium and Electron apps only expose their accessibility tree when
+        // assistive technology is enabled before they launch, so Flow turns it
+        // on at startup rather than waiting for the first capture.
+        std::thread::spawn(selection::enable_accessibility);
+
         let (sender, receiver) = mpsc::unbounded_channel();
         self.shortcut_commands = Some(sender);
         let activation_pointer = QPointer::from(&*self);

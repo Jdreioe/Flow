@@ -100,15 +100,23 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
     // fastest signal available, but the AT-SPI search wins if it answers
     // within the grace period: accessibility reflects the user's current
     // selection even when it was made with the keyboard, while the primary
-    // selection can hold a stale value indefinitely. Browsers and editors
-    // expose thousands of text nodes, so their AT-SPI sweep can take seconds;
-    // without the grace period those apps would never speak.
+    // selection can hold a stale value indefinitely. All windows join the
+    // race because several Wayland apps (Firefox, Electron) never mark their
+    // windows Active or Focused over AT-SPI, so restricting the race to
+    // active windows would always fall through to a stale primary value.
+    other_roots.reverse();
     let primary_text = read_primary_selection();
-    let search = search_windows(&atspi, focused_roots.iter().chain(&active_roots));
+    let search = search_windows(
+        &atspi,
+        focused_roots
+            .iter()
+            .chain(&active_roots)
+            .chain(&other_roots),
+    );
     tokio::pin!(search);
     let mut search_found_text_interface = false;
     let atspi_text = if primary_text.is_some() {
-        let grace = tokio::time::sleep(Duration::from_millis(500));
+        let grace = tokio::time::sleep(Duration::from_millis(750));
         tokio::pin!(grace);
         loop {
             tokio::select! {
@@ -137,19 +145,6 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
         };
         debug_selection("primary selection", application_name, &text);
         return Ok(text);
-    }
-
-    // Opening the tray menu can strip the active state from the application
-    // whose selection the user wants to read, so the remaining windows are
-    // swept as a last resort before giving up.
-    other_roots.reverse();
-    for root in &other_roots {
-        let result = selected_text_in_window(&atspi, root.object.clone()).await;
-        found_text_interface |= result.found_text_interface;
-        if let Some(text) = result.text {
-            debug_selection("AT-SPI fallback", &root.application_name, &text);
-            return Ok(text);
-        }
     }
 
     Err(if found_text_interface {
@@ -314,7 +309,7 @@ async fn selected_text_in_window(
     let mut level = vec![root];
     while remaining > 0 && !level.is_empty() {
         remaining = remaining.saturating_sub(level.len());
-        let outcomes: Vec<(bool, Option<String>, Vec<ObjectRefOwned>)> =
+        let outcomes: Vec<((bool, Option<String>), Vec<ObjectRefOwned>)> =
             futures_util::stream::iter(level.drain(..).filter(|object| !object.is_null()))
                 .map(|object| {
                     let connection = connection.clone();

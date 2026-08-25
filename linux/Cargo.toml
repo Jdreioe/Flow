@@ -29,6 +29,7 @@ tokio-stream = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 wl-clipboard-rs = "0.9.3"
 x11-clipboard = "0.9.3"
+zbus = "5.19"
 
 [build-dependencies]
 cpp_build = "0.5.10"
