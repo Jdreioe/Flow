@@ -118,14 +118,12 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
     let atspi_text = if primary_text.is_some() {
         let grace = tokio::time::sleep(Duration::from_millis(750));
         tokio::pin!(grace);
-        loop {
-            tokio::select! {
-                result = &mut search => {
-                    search_found_text_interface = result.found_text_interface;
-                    break result.text;
-                }
-                _ = &mut grace => break None,
+        tokio::select! {
+            result = &mut search => {
+                search_found_text_interface = result.found_text_interface;
+                result.text
             }
+            _ = &mut grace => None,
         }
     } else {
         let result = search.await;

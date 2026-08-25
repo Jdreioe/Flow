@@ -98,9 +98,7 @@ fn appimage_asset(release: &Release) -> Result<&Asset, String> {
     release
         .assets
         .iter()
-        .find(|asset| {
-            asset.name.ends_with(".AppImage") && asset.name.contains(MACHINE)
-        })
+        .find(|asset| asset.name.ends_with(".AppImage") && asset.name.contains(MACHINE))
         .or_else(|| {
             release
                 .assets
@@ -115,7 +113,11 @@ fn appimage_asset(release: &Release) -> Result<&Asset, String> {
         })
 }
 
-fn stage_update(release_tag: &str, asset_url: &str, appimage: &std::path::Path) -> Result<(), String> {
+fn stage_update(
+    release_tag: &str,
+    asset_url: &str,
+    appimage: &std::path::Path,
+) -> Result<(), String> {
     let response = reqwest::blocking::Client::new()
         .get(asset_url)
         .header(
@@ -126,9 +128,9 @@ fn stage_update(release_tag: &str, asset_url: &str, appimage: &std::path::Path) 
         .map_err(|_| format!("Flow found version {release_tag} but could not download it."))?
         .error_for_status()
         .map_err(|_| format!("Flow found version {release_tag} but could not download it."))?;
-    let bytes = response.bytes().map_err(|_| {
-        format!("Flow found version {release_tag} but could not download it.")
-    })?;
+    let bytes = response
+        .bytes()
+        .map_err(|_| format!("Flow found version {release_tag} but could not download it."))?;
     let staged = staged_path(appimage);
     fs::write(&staged, &bytes)
         .map_err(|_| "Flow could not save the update next to the running AppImage. Move Flow somewhere writable, then try again.".to_owned())?;
@@ -142,7 +144,10 @@ pub fn check() -> Result<Outcome, String> {
         return Err(not_appimage_error());
     };
     let release = fetch_latest_release()?;
-    if !is_newer(&numeric_version(&release.tag_name), &numeric_version(VERSION)) {
+    if !is_newer(
+        &numeric_version(&release.tag_name),
+        &numeric_version(VERSION),
+    ) {
         return Ok(Outcome::UpToDate);
     }
     let asset = appimage_asset(&release)?;

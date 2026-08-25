@@ -65,19 +65,15 @@ pub fn find_engine() -> Option<PathBuf> {
             candidates.push(dir.join("piper"));
         }
     }
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn voices_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("flow").join("piper"))
+    directories::BaseDirs::new().map(|dirs| dirs.data_dir().join("flow").join("piper"))
 }
 
 pub fn is_installed(key: &str) -> bool {
-    voices_dir()
-        .is_some_and(|dir| dir.join(format!("{key}.onnx")).is_file())
+    voices_dir().is_some_and(|dir| dir.join(format!("{key}.onnx")).is_file())
 }
 
 /// Catalog entries whose language family matches one of Flow's supported
@@ -134,26 +130,23 @@ pub fn fetch_catalog() -> Result<Vec<PiperVoice>, String> {
 }
 
 fn repo_path(entry: &RawVoice, suffix: &str) -> Option<String> {
-    entry.files.keys().find_map(|path| {
-        path.ends_with(suffix).then(|| path.to_owned())
-    })
+    entry
+        .files
+        .keys()
+        .find_map(|path| path.ends_with(suffix).then(|| path.to_owned()))
 }
 
 /// Downloads both the ONNX model and its config into Flow's data directory.
 /// Each file lands via a temp rename so an interrupted download never leaves
 /// a partial model that looks installed.
 pub fn download_voice(key: &str) -> Result<(), String> {
-    let dir = voices_dir().ok_or_else(|| {
-        "Flow has no data directory available for Piper voices.".to_owned()
-    })?;
+    let dir = voices_dir()
+        .ok_or_else(|| "Flow has no data directory available for Piper voices.".to_owned())?;
     std::fs::create_dir_all(&dir)
         .map_err(|_| "Flow could not create its Piper voice directory.".to_owned())?;
 
     let raw = fetch_raw_entry(key)?;
-    for (suffix, message) in [
-        (".onnx.json", "config"),
-        (".onnx", "model"),
-    ] {
+    for (suffix, message) in [(".onnx.json", "config"), (".onnx", "model")] {
         let path = repo_path(&raw, &format!("{key}{suffix}"))
             .ok_or_else(|| format!("The {key} voice has no {message} file in the catalog."))?;
         let bytes = reqwest::blocking::Client::new()
@@ -214,7 +207,11 @@ fn fetch_raw_entry(key: &str) -> Result<RawVoice, String> {
 }
 
 /// Synthesizes one sentence to WAV bytes through the piper executable.
-pub fn synthesize(engine: &std::path::Path, voice_key: &str, text: &str) -> Result<Vec<u8>, String> {
+pub fn synthesize(
+    engine: &std::path::Path,
+    voice_key: &str,
+    text: &str,
+) -> Result<Vec<u8>, String> {
     let Some(dir) = voices_dir() else {
         return Err("Flow has no data directory available for Piper voices.".to_owned());
     };
@@ -231,8 +228,7 @@ pub fn synthesize(engine: &std::path::Path, voice_key: &str, text: &str) -> Resu
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| {
-            "Flow could not start the Piper speech engine. Check that it is installed."
-                .to_owned()
+            "Flow could not start the Piper speech engine. Check that it is installed.".to_owned()
         })?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -287,15 +283,14 @@ mod tests {
             eprintln!("skipping: no piper engine on PATH");
             return;
         };
-        let key = std::env::var("FLOW_TEST_PIPER_VOICE").unwrap_or_else(|_| {
-            "en_US-lessac-medium".to_owned()
-        });
+        let key = std::env::var("FLOW_TEST_PIPER_VOICE")
+            .unwrap_or_else(|_| "en_US-lessac-medium".to_owned());
         if !is_installed(&key) {
             eprintln!("skipping: {key} is not downloaded");
             return;
         }
-        let wav = synthesize(&engine, &key, "Flow reads selected text.")
-            .expect("piper synthesizes");
+        let wav =
+            synthesize(&engine, &key, "Flow reads selected text.").expect("piper synthesizes");
         assert!(wav.starts_with(b"RIFF"), "expected WAV bytes from piper");
     }
 }

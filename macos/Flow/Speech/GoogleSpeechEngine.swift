@@ -25,11 +25,68 @@ enum GoogleVoiceCatalog {
             return parts.joined(separator: "-")
         }
 
+        enum ModelFamily: CaseIterable, Hashable {
+            case gemini
+            case chirp3HD
+            case studio
+            case journey
+            case polyglot
+            case neural2
+            case wavenet
+            case news
+            case standard
+            case extended
+            case chirpHD
+            case other
+
+            var title: String {
+                switch self {
+                case .gemini: "Gemini-TTS"
+                case .chirp3HD: "Chirp 3 HD"
+                case .studio: "Studio"
+                case .journey: "Journey"
+                case .polyglot: "Polyglot"
+                case .neural2: "Neural2"
+                case .wavenet: "WaveNet"
+                case .news: "News"
+                case .standard: "Standard"
+                case .extended: "Extended"
+                case .chirpHD: "Chirp HD"
+                case .other: "Other"
+                }
+            }
+        }
+
+        var modelFamily: ModelFamily {
+            let variant = displayName.lowercased()
+            if variant.hasPrefix("chirp3") { return .chirp3HD }
+            switch variant.split(separator: "-").first {
+            case "gemini": return .gemini
+            case "studio": return .studio
+            case "journey": return .journey
+            case "polyglot": return .polyglot
+            case "neural2": return .neural2
+            case "wavenet": return .wavenet
+            case "news": return .news
+            case "standard": return .standard
+            case "extended": return .extended
+            case "chirp": return .chirpHD
+            default: return .other
+            }
+        }
+
         func supports(languageTag: String) -> Bool {
             let base = languageTag.split(separator: "-").first?.lowercased()
             return languageCodes.contains {
                 $0.split(separator: "-").first?.lowercased() == base
             }
+        }
+    }
+
+    static func groupedByModelFamily(_ voices: [Voice]) -> [(family: Voice.ModelFamily, voices: [Voice])] {
+        Voice.ModelFamily.allCases.compactMap { family in
+            let members = voices.filter { $0.modelFamily == family }
+            return members.isEmpty ? nil : (family, members)
         }
     }
 
@@ -199,18 +256,18 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         }
     }
 
-    private struct WordTiming {
+    struct WordTiming {
         let timeSeconds: Double
         let range: Range<Int>
     }
 
-    private struct AudioSegment {
+    struct AudioSegment {
         let data: Data
         let wordTimings: [WordTiming]
         let speedOverride: Float?
     }
 
-    private static func synthesize(plan: LanguageFlow.Plan, apiKey: String, includeWordTimings: Bool) async throws -> [AudioSegment] {
+    static func synthesize(plan: LanguageFlow.Plan, apiKey: String, includeWordTimings: Bool) async throws -> [AudioSegment] {
         var audio: [AudioSegment] = []
         var sentenceOffset = 0
         for sentence in plan.sentences {

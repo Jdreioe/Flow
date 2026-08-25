@@ -25,9 +25,19 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         synthesizer.delegate = self
     }
 
-    static var voices: [Voice] {
+    static var voices: [Voice] { cachedVoices }
+
+    private static var cachedVoices: [Voice] = buildVoiceList()
+
+    // Enumerating speechVoices() formats a localized name per voice and is
+    // far too slow to run on every SwiftUI render of the settings form.
+    static func reloadVoices() {
+        cachedVoices = buildVoiceList()
+    }
+
+    private static func buildVoiceList() -> [Voice] {
         AVSpeechSynthesisVoice.speechVoices()
-            .filter { !$0.identifier.contains(".siri.") }
+            .filter(isListable)
             .map { voice in
                 let localeName = Locale.current.localizedString(forIdentifier: voice.language) ?? voice.language
                 return Voice(id: voice.identifier, name: "\(voice.name) — \(localeName)", language: voice.language)
@@ -35,13 +45,18 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    private static func isListable(_ voice: AVSpeechSynthesisVoice) -> Bool {
+        !voice.identifier.contains(".siri.")
+            && !voice.identifier.contains("<+>")
+    }
+
     static func defaultVoice(for languageTag: String) -> AVSpeechSynthesisVoice? {
-        if let voice = AVSpeechSynthesisVoice(language: languageTag), !voice.identifier.contains(".siri.") {
+        if let voice = AVSpeechSynthesisVoice(language: languageTag), isListable(voice) {
             return voice
         }
         let base = languageTag.split(separator: "-").first?.lowercased()
         return AVSpeechSynthesisVoice.speechVoices().first {
-            !$0.identifier.contains(".siri.") &&
+            isListable($0) &&
                 $0.language.split(separator: "-").first?.lowercased() == base
         }
     }

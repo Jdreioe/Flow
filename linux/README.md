@@ -106,6 +106,10 @@ explains key restrictions and rotation.
   downloads from Hugging Face
 - Sentence-level on-device language detection across Flow's ten languages
 - Language review when detection is uncertain or a language is not configured
+- A playback popup that mirrors macOS and Windows: it shows the selection with
+  the reading position highlighted. Word-level highlighting follows Speech
+  Dispatcher's index marks where the output module supports SSML; other
+  modules highlight the current sentence.
 - Per-language system/Azure/Google routing and Azure multilingual mode
 - Configurable popup dismissal and same-selection behavior
 - A roughly ten-minute selection limit and no reading history

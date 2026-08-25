@@ -4,6 +4,7 @@ import ApplicationServices
 enum AccessibilitySelectionError: Error {
     case permissionRequired
     case noSelectedText
+    case selectionNeedsRefresh
     /// Carries the last AXError macOS reported so failures can be diagnosed.
     case unavailable(AXError?)
 }
@@ -19,55 +20,31 @@ enum AccessibilitySelectionReader {
         AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
     }
 
-    /// Browsers defer building their full accessibility tree until an
-    /// assistive client asks for the application's role. Preparing an app when
-    /// it becomes active ensures its selection events are observed before the
-    /// user invokes Flow.
+    /// Chromium and Firefox-family browsers build parts of their accessibility
+    /// tree only after an assistive client asks for it.
     @discardableResult
-    static func prepare(_ application: NSRunningApplication?, reason: String = "capture") -> Bool {
-        guard isTrusted,
-              let application,
-              application.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
-#if DEBUG
-            DebugAXTrace.record("prepare_skipped", fields: [
-                "reason": reason,
-                "trusted": "\(isTrusted)",
-                "has_app": "\(application != nil)",
-            ])
-#endif
+    static func prepare(pid: pid_t) -> Bool {
+        guard isTrusted, pid != ProcessInfo.processInfo.processIdentifier else {
             return false
         }
 
-        let root = AXUIElementCreateApplication(pid_t(application.processIdentifier))
-        var enhancedBefore: CFTypeRef?
-        let enhancedBeforeResult = AXUIElementCopyAttributeValue(
-            root,
-            "AXEnhancedUserInterface" as CFString,
-            &enhancedBefore
-        )
+        let root = AXUIElementCreateApplication(pid)
         var roleValue: CFTypeRef?
         let roleResult = AXUIElementCopyAttributeValue(
             root,
             kAXRoleAttribute as CFString,
             &roleValue
         )
-        // Firefox-family apps, including Zen, can return the application role
-        // before their web-content accessibility tree is fully enabled.
-        let enhancedSetResult = AXUIElementSetAttributeValue(
+
+        // Firefox-family apps can expose their application role before their
+        // web-content accessibility tree is enabled.
+        AXUIElementSetAttributeValue(
             root,
             "AXEnhancedUserInterface" as CFString,
             kCFBooleanTrue
         )
-        var enhancedAfter: CFTypeRef?
-        let enhancedAfterResult = AXUIElementCopyAttributeValue(
-            root,
-            "AXEnhancedUserInterface" as CFString,
-            &enhancedAfter
-        )
 
-        // Enabling the flag permits accessibility, but Firefox-family apps do
-        // not instantiate their web-content objects until a client also asks
-        // for the active tree. These queries contain no text values.
+        // These queries warm the active tree without reading any text values.
         var focusedValue: CFTypeRef?
         let focusedResult = AXUIElementCopyAttributeValue(
             root,
@@ -80,29 +57,9 @@ enum AccessibilitySelectionReader {
             kAXChildrenAttribute as CFString,
             &childrenValue
         )
-#if DEBUG
-        DebugAXTrace.record("prepare", fields: [
-            "reason": reason,
-            "pid": "\(application.processIdentifier)",
-            "bundle": application.bundleIdentifier ?? "nil",
-            "enhanced_before_result": "\(enhancedBeforeResult.rawValue)",
-            "enhanced_before": String(describing: enhancedBefore),
-            "role_result": "\(roleResult.rawValue)",
-            "role": String(describing: roleValue),
-            "enhanced_set_result": "\(enhancedSetResult.rawValue)",
-            "enhanced_after_result": "\(enhancedAfterResult.rawValue)",
-            "enhanced_after": String(describing: enhancedAfter),
-            "focused_result": "\(focusedResult.rawValue)",
-            "focused_present": "\(focusedValue != nil)",
-            "children_result": "\(childrenResult.rawValue)",
-            "children_count": "\((childrenValue as? [AXUIElement])?.count ?? -1)",
-        ])
-#endif
-        return roleResult == .success && focusedResult == .success && childrenResult == .success
-    }
 
-    static func prepareFrontmostApplication(reason: String = "frontmost") {
-        prepare(NSWorkspace.shared.frontmostApplication, reason: reason)
+        return roleResult == .success
+            && (focusedResult == .success || childrenResult == .success)
     }
 
     static func readFocusedSelection() -> Result<String, AccessibilitySelectionError> {
@@ -113,57 +70,31 @@ enum AccessibilitySelectionReader {
         let applicationRoot = sourceApplication.map {
             AXUIElementCreateApplication(pid_t($0.processIdentifier))
         }
+        var foundFocusedElement = false
         var foundSelectedTextAttribute = false
         var latestError: AXError?
-        var diagnostics = CaptureDiagnostics()
-#if DEBUG
-        let captureID = UUID().uuidString
-        DebugAXTrace.record("capture_started", fields: [
-            "capture_id": captureID,
-            "pid": "\(sourceApplication?.processIdentifier ?? -1)",
-            "bundle": sourceApplication?.bundleIdentifier ?? "nil",
-        ])
-#endif
 
-        // Also prepare here in case Flow missed the activation notification.
-        prepare(sourceApplication, reason: "capture")
+        if let sourceApplication {
+            prepare(pid: pid_t(sourceApplication.processIdentifier))
+        }
 
         for attempt in 0..<focusAttempts {
             var focusedElements: [AXUIElement] = []
-            if let element = focusedElement(
-                from: system,
-                label: "system\(attempt + 1)",
-                latestError: &latestError,
-                diagnostics: &diagnostics
-            ) {
+            if let element = focusedElement(from: system, latestError: &latestError) {
                 focusedElements.append(element)
             }
             if let applicationRoot,
-               let element = focusedElement(
-                   from: applicationRoot,
-                   label: "app\(attempt + 1)",
-                   latestError: &latestError,
-                   diagnostics: &diagnostics
-               ) {
+               let element = focusedElement(from: applicationRoot, latestError: &latestError) {
                 focusedElements.append(element)
             }
+            foundFocusedElement = foundFocusedElement || !focusedElements.isEmpty
 
             for element in focusedElements {
                 if let text = selectionInParentChain(
                     from: element,
                     foundSelectedTextAttribute: &foundSelectedTextAttribute,
-                    latestError: &latestError,
-                    diagnostics: &diagnostics
+                    latestError: &latestError
                 ) {
-#if DEBUG
-                    recordCapture(
-                        id: captureID,
-                        result: "success_parent",
-                        textLength: text.count,
-                        latestError: latestError,
-                        diagnostics: diagnostics
-                    )
-#endif
                     return .success(text)
                 }
             }
@@ -180,97 +111,46 @@ enum AccessibilitySelectionReader {
            let focusedWindow = elementAttribute(
                from: applicationRoot,
                attribute: kAXFocusedWindowAttribute as CFString,
-               label: "window",
                latestError: &latestError
            ),
-           let text = selectedText(
-               in: focusedWindow,
-               label: "window",
-               latestError: &latestError,
-               diagnostics: &diagnostics
-           ) {
-#if DEBUG
-            recordCapture(
-                id: captureID,
-                result: "success_window",
-                textLength: text.count,
-                latestError: latestError,
-                diagnostics: diagnostics
-            )
-#endif
+           let text = selectedText(in: focusedWindow, latestError: &latestError) {
             return .success(text)
         }
 
         // Focus can be temporarily absent while the app tree remains readable.
         if let applicationRoot,
-           let text = selectedText(
-               in: applicationRoot,
-               label: "application",
-               latestError: &latestError,
-               diagnostics: &diagnostics
-           ) {
-#if DEBUG
-            recordCapture(
-                id: captureID,
-                result: "success_application",
-                textLength: text.count,
-                latestError: latestError,
-                diagnostics: diagnostics
-            )
-#endif
+           let text = selectedText(in: applicationRoot, latestError: &latestError) {
             return .success(text)
         }
 
-#if DEBUG
-        recordCapture(
-            id: captureID,
-            result: foundSelectedTextAttribute ? "failure_empty" : "failure_unavailable",
-            textLength: 0,
-            latestError: latestError,
-            diagnostics: diagnostics
-        )
-#endif
+        if isZen(sourceApplication), foundFocusedElement, latestError == .noValue {
+            return .failure(.selectionNeedsRefresh)
+        }
         return .failure(foundSelectedTextAttribute ? .noSelectedText : .unavailable(latestError))
+    }
+
+    private static func isZen(_ application: NSRunningApplication?) -> Bool {
+        application?.bundleIdentifier?.hasPrefix("app.zen-browser.zen") == true
     }
 
     private static func focusedElement(
         from root: AXUIElement,
-        label: String,
-        latestError: inout AXError?,
-        diagnostics: inout CaptureDiagnostics
+        latestError: inout AXError?
     ) -> AXUIElement? {
-        let element = elementAttribute(
+        elementAttribute(
             from: root,
             attribute: kAXFocusedUIElementAttribute as CFString,
-            label: label,
             latestError: &latestError
         )
-        if let element {
-            diagnostics.focus.append("\(label)=0:true")
-            return element
-        }
-        diagnostics.focus.append("\(label)=\(latestError?.rawValue ?? 0):false")
-        return nil
     }
 
     private static func elementAttribute(
         from element: AXUIElement,
         attribute: CFString,
-        label: String? = nil,
         latestError: inout AXError?
     ) -> AXUIElement? {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-#if DEBUG
-        if let label {
-            DebugAXTrace.record("element_attribute", fields: [
-                "label": label,
-                "attribute": attribute as String,
-                "result": "\(result.rawValue)",
-                "present": "\(value != nil)",
-            ])
-        }
-#endif
         guard result == .success,
               let value,
               CFGetTypeID(value) == AXUIElementGetTypeID() else {
@@ -285,13 +165,11 @@ enum AccessibilitySelectionReader {
     private static func selectionInParentChain(
         from focusedElement: AXUIElement,
         foundSelectedTextAttribute: inout Bool,
-        latestError: inout AXError?,
-        diagnostics: inout CaptureDiagnostics
+        latestError: inout AXError?
     ) -> String? {
         var element = focusedElement
         for _ in 0..<8 {
-            diagnostics.parentNodes += 1
-            switch selectedText(from: element, diagnostics: &diagnostics) {
+            switch selectedText(from: element) {
             case .text(let text):
                 return text
             case .empty:
@@ -320,35 +198,25 @@ enum AccessibilitySelectionReader {
     /// unusually large accessibility trees from stalling Flow.
     private static func selectedText(
         in root: AXUIElement,
-        label: String,
-        latestError: inout AXError?,
-        diagnostics: inout CaptureDiagnostics
+        latestError: inout AXError?
     ) -> String? {
         var remainingElements = 600
-        let visitedBefore = diagnostics.visitedNodes
-        let text = selectedText(
+        return selectedText(
             in: root,
             remainingElements: &remainingElements,
-            latestError: &latestError,
-            diagnostics: &diagnostics
+            latestError: &latestError
         )
-        diagnostics.scans.append(
-            "\(label):visited=\(diagnostics.visitedNodes - visitedBefore):remaining=\(remainingElements):found=\(text != nil)"
-        )
-        return text
     }
 
     private static func selectedText(
         in element: AXUIElement,
         remainingElements: inout Int,
-        latestError: inout AXError?,
-        diagnostics: inout CaptureDiagnostics
+        latestError: inout AXError?
     ) -> String? {
         guard remainingElements > 0 else { return nil }
         remainingElements -= 1
-        diagnostics.visitedNodes += 1
 
-        switch selectedText(from: element, diagnostics: &diagnostics) {
+        switch selectedText(from: element) {
         case .text(let text):
             return text
         case .unavailable(let error):
@@ -358,13 +226,11 @@ enum AccessibilitySelectionReader {
         }
 
         var childrenValue: CFTypeRef?
-        let childrenResult = AXUIElementCopyAttributeValue(
+        guard AXUIElementCopyAttributeValue(
             element,
             kAXChildrenAttribute as CFString,
             &childrenValue
-        )
-        diagnostics.childrenResults[childrenResult.rawValue, default: 0] += 1
-        guard childrenResult == .success,
+        ) == .success,
               let children = childrenValue as? [AXUIElement] else {
             return nil
         }
@@ -372,8 +238,7 @@ enum AccessibilitySelectionReader {
             if let text = selectedText(
                 in: child,
                 remainingElements: &remainingElements,
-                latestError: &latestError,
-                diagnostics: &diagnostics
+                latestError: &latestError
             ) {
                 return text
             }
@@ -387,17 +252,13 @@ enum AccessibilitySelectionReader {
         case unavailable(AXError?)
     }
 
-    private static func selectedText(
-        from element: AXUIElement,
-        diagnostics: inout CaptureDiagnostics
-    ) -> SelectedTextResult {
+    private static func selectedText(from element: AXUIElement) -> SelectedTextResult {
         var selectedValue: CFTypeRef?
         let selectedResult = AXUIElementCopyAttributeValue(
             element,
             kAXSelectedTextAttribute as CFString,
             &selectedValue
         )
-        diagnostics.selectedResults[selectedResult.rawValue, default: 0] += 1
         if selectedResult == .success {
             return textResult(selectedValue as? String)
         }
@@ -410,9 +271,7 @@ enum AccessibilitySelectionReader {
             kAXSelectedTextMarkerRangeAttribute as CFString,
             &markerRange
         )
-        diagnostics.markerResults[markerResult.rawValue, default: 0] += 1
-        guard markerResult == .success,
-              let markerRange else {
+        guard markerResult == .success, let markerRange else {
             return .unavailable(markerResult)
         }
         var textValue: CFTypeRef?
@@ -422,52 +281,11 @@ enum AccessibilitySelectionReader {
             markerRange,
             &textValue
         )
-        diagnostics.markerTextResults[markerTextResult.rawValue, default: 0] += 1
         guard markerTextResult == .success else {
             return .empty
         }
         return textResult(textValue as? String)
     }
-
-    private struct CaptureDiagnostics {
-        var focus: [String] = []
-        var scans: [String] = []
-        var parentNodes = 0
-        var visitedNodes = 0
-        var selectedResults: [Int32: Int] = [:]
-        var markerResults: [Int32: Int] = [:]
-        var markerTextResults: [Int32: Int] = [:]
-        var childrenResults: [Int32: Int] = [:]
-
-        func counts(_ values: [Int32: Int]) -> String {
-            values.keys.sorted().map { "\($0):\(values[$0] ?? 0)" }.joined(separator: ",")
-        }
-    }
-
-#if DEBUG
-    private static func recordCapture(
-        id: String,
-        result: String,
-        textLength: Int,
-        latestError: AXError?,
-        diagnostics: CaptureDiagnostics
-    ) {
-        DebugAXTrace.record("capture_finished", fields: [
-            "capture_id": id,
-            "result": result,
-            "text_length": "\(textLength)",
-            "latest_error": "\(latestError?.rawValue ?? 0)",
-            "focus": diagnostics.focus.joined(separator: ","),
-            "parent_nodes": "\(diagnostics.parentNodes)",
-            "visited_nodes": "\(diagnostics.visitedNodes)",
-            "scans": diagnostics.scans.joined(separator: ";"),
-            "selected": diagnostics.counts(diagnostics.selectedResults),
-            "marker": diagnostics.counts(diagnostics.markerResults),
-            "marker_text": diagnostics.counts(diagnostics.markerTextResults),
-            "children": diagnostics.counts(diagnostics.childrenResults),
-        ])
-    }
-#endif
 
     private static func textResult(_ text: String?) -> SelectedTextResult {
         guard let text,

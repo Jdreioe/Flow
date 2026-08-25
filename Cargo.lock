@@ -807,6 +807,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "unicode-segmentation",
  "uuid",
  "wl-clipboard-rs",
  "x11-clipboard",

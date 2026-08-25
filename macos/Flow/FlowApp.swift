@@ -24,14 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popup: PlaybackPopupController?
     private var settingsWindow: SettingsWindowController?
     private var applicationObservers: [NSObjectProtocol] = []
-#if DEBUG
-    private var debugCaptureObserver: NSObjectProtocol?
-#endif
+    private let accessibilityPreparer = AccessibilityPreparationCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-#if DEBUG
-        DebugAXTrace.reset()
-#endif
         popup = PlaybackPopupController(model: model)
         settingsWindow = SettingsWindowController(model: model)
         model.onPopupVisibilityChanged = { [weak self] isVisible in
@@ -59,51 +54,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { notification in
-            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                as? NSRunningApplication
-            AccessibilitySelectionReader.prepare(application, reason: "activated")
+        ) { [accessibilityPreparer] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication else { return }
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         })
         applicationObservers.append(workspaceNotifications.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
-        ) { notification in
+        ) { [accessibilityPreparer] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication else { return }
-            AccessibilitySelectionReader.prepare(application, reason: "launched")
-            // A launch notification can arrive before the app has finished
-            // installing its accessibility endpoint.
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !application.isTerminated else { return }
-                AccessibilitySelectionReader.prepare(application, reason: "launch_retry_500ms")
-            }
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         })
-        AccessibilitySelectionReader.prepareFrontmostApplication(reason: "flow_startup")
-#if DEBUG
-        let startupApplication = NSWorkspace.shared.frontmostApplication
-        Task.detached {
-            for attempt in 1 ... 40 {
-                try? await Task.sleep(for: .milliseconds(50))
-                guard let startupApplication, !startupApplication.isTerminated else { return }
-                if AccessibilitySelectionReader.prepare(
-                    startupApplication,
-                    reason: "debug_startup_retry_\(attempt)"
-                ) {
-                    return
-                }
-            }
+        if let application = NSWorkspace.shared.frontmostApplication {
+            let pid = pid_t(application.processIdentifier)
+            Task { await accessibilityPreparer.prepare(pid: pid) }
         }
-        debugCaptureObserver = DistributedNotificationCenter.default().addObserver(
-            forName: DebugAXTrace.notificationName,
-            object: nil,
-            queue: .main
-        ) { [weak model] _ in
-            DebugAXTrace.record("capture_notification_received")
-            model?.readSelectionFromHotKey()
-        }
-#endif
         installHotKey(model.settings.hotKey)
         ChangelogWindowController.presentAfterUpdate()
     }
@@ -112,11 +82,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for observer in applicationObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
-#if DEBUG
-        if let debugCaptureObserver {
-            DistributedNotificationCenter.default().removeObserver(debugCaptureObserver)
-        }
-#endif
     }
 
     private func showWhatsNew() {
@@ -137,7 +102,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.hotKeyError = "\(preset.title) is already in use. Choose another Flow shortcut."
         }
     }
+}
 
+private actor AccessibilityPreparationCoordinator {
+    private static let attempts = 20
+    private static let retryDelay = Duration.milliseconds(100)
+    private var pendingPIDs: Set<pid_t> = []
+
+    func prepare(pid: pid_t) async {
+        guard pid != ProcessInfo.processInfo.processIdentifier else { return }
+        guard pendingPIDs.insert(pid).inserted else { return }
+        defer { pendingPIDs.remove(pid) }
+
+        for attempt in 0..<Self.attempts {
+            guard let application = NSRunningApplication(processIdentifier: pid),
+                  !application.isTerminated else { return }
+            if AccessibilitySelectionReader.prepare(pid: pid) {
+                return
+            }
+            guard attempt + 1 < Self.attempts else { return }
+            try? await Task.sleep(for: Self.retryDelay)
+        }
+    }
+}
+
+// Word-level progress changes many times per second during playback. Keeping
+// it out of FlowModel stops the settings window from re-rendering on every
+// highlight tick while only the playback popup observes this object.
+@MainActor
+final class PlaybackProgress: ObservableObject {
+    @Published var wordRange: Range<Int>?
+    @Published var readingOffset: Double?
 }
 
 @MainActor
@@ -154,8 +149,7 @@ final class FlowModel: ObservableObject {
 
     @Published private(set) var state: PlaybackState = .hidden
     @Published private(set) var selectedText = ""
-    @Published private(set) var currentWordRange: Range<Int>?
-    @Published private(set) var currentReadingOffset: Double?
+    let progress = PlaybackProgress()
     var playbackSpeed: Float { settings.playbackSpeed }
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var azureEndpoint: String?
@@ -188,12 +182,15 @@ final class FlowModel: ObservableObject {
     private let azureSpeech = AzureSpeechEngine()
     private let googleSpeech = GoogleSpeechEngine()
     private var activeSpeech: FlowSpeechEngine?
+    private var previewPlayer: AVAudioPlayer?
+    private var previewTask: Task<Void, Never>?
     private var dismissTask: Task<Void, Never>?
 
     init() {
         var loadedSettings = FlowSettings.load()
         loadedSettings.ensureExplicitSystemVoices()
         settings = loadedSettings
+        SystemSpeechEngine.reloadVoices()
         accessibilityTrusted = AccessibilitySelectionReader.isTrusted
         azureEndpoint = AzureCredentialsStore.load()?.endpoint
         googleConfigured = GoogleCredentialsStore.load() != nil
@@ -204,7 +201,7 @@ final class FlowModel: ObservableObject {
         }
         systemSpeech.onFinished = finished
         systemSpeech.onWordRange = { [weak self] range in
-            Task { @MainActor in self?.currentWordRange = range }
+            Task { @MainActor in self?.progress.wordRange = range }
         }
         azureSpeech.onFinished = finished
         azureSpeech.onFailure = { [weak self] message in
@@ -215,10 +212,10 @@ final class FlowModel: ObservableObject {
             Task { @MainActor in self?.showMessage(message) }
         }
         googleSpeech.onWordRange = { [weak self] range in
-            Task { @MainActor in self?.currentWordRange = range }
+            Task { @MainActor in self?.progress.wordRange = range }
         }
         googleSpeech.onReadingOffset = { [weak self] offset in
-            Task { @MainActor in self?.currentReadingOffset = offset }
+            Task { @MainActor in self?.progress.readingOffset = offset }
         }
         saveSettings()
         refreshAzureVoices()
@@ -260,14 +257,45 @@ final class FlowModel: ObservableObject {
         let plan = LanguageFlow.singleSentence(selectedText, settings: settings)
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         activeSpeech = speech
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
         speech.read(plan, settings: settings)
         state = .playing
+    }
+
+    func previewGoogleVoice(named voiceName: String?, languageTag: String) {
+        guard let apiKey = GoogleCredentialsStore.load() else { return }
+        if activeSpeech === googleSpeech { stop() }
+        previewTask?.cancel()
+        previewPlayer?.stop()
+        var route = settings.defaultLanguageRoute
+        route.languageTag = languageTag
+        route.googleVoiceName = voiceName
+        route.playbackSpeed = nil
+        let plan = LanguageFlow.Plan(sentences: [LanguageFlow.Sentence(
+            text: "Hello, this is what Flow sounds like with this voice.",
+            detectedLanguageTag: languageTag,
+            route: route,
+            needsReview: false,
+            detectedButUnconfigured: false,
+        )])
+        previewTask = Task {
+            do {
+                let audio = try await GoogleSpeechEngine.synthesize(plan: plan, apiKey: apiKey, includeWordTimings: false)
+                try Task.checkCancellation()
+                guard let segment = audio.first else { return }
+                let player = try AVAudioPlayer(data: segment.data)
+                player.enableRate = true
+                player.rate = min(max(settings.playbackSpeed, 0.5), 4)
+                previewPlayer = player
+                player.play()
+            } catch is CancellationError {
+            } catch {}
+        }
     }
 
     func pauseOrResume() {
@@ -292,8 +320,10 @@ final class FlowModel: ObservableObject {
     func stop() {
         dismissTask?.cancel()
         activeSpeech?.stop()
-        currentWordRange = nil
-        currentReadingOffset = nil
+        previewTask?.cancel()
+        previewPlayer?.stop()
+        progress.wordRange = nil
+        progress.readingOffset = nil
         selectedText = ""
         languagePlan = nil
         state = .hidden
@@ -312,6 +342,11 @@ final class FlowModel: ObservableObject {
             showMessage("Flow needs Accessibility permission to read selected text.")
         case .failure(.noSelectedText):
             showMessage("Select some text, then press \(settings.hotKey.title).")
+        case .failure(.selectionNeedsRefresh):
+            showMessage(
+                "Zen has not exposed this selection to macOS yet. "
+                    + "Select the text again, then press \(settings.hotKey.title)."
+            )
         case .failure(.unavailable(let underlying)):
             showMessage(Self.captureFailureMessage(underlying))
         case .success(let text):
@@ -436,8 +471,8 @@ final class FlowModel: ObservableObject {
         selectedText = settings.wordHighlightingEnabled
             ? LanguageFlow.playbackText(for: plan, sourceText: text)
             : text
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         languagePlan = plan
         state = .preparing
         onPopupVisibilityChanged?(true)
@@ -447,8 +482,8 @@ final class FlowModel: ObservableObject {
 
     private func showMessage(_ message: String) {
         selectedText = ""
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         languagePlan = nil
         state = .message(message)
         onPopupVisibilityChanged?(true)
@@ -458,8 +493,8 @@ final class FlowModel: ObservableObject {
     private func finishedReading() {
         guard state == .playing || state == .paused else { return }
         state = .finished
-        currentWordRange = nil
-        currentReadingOffset = nil
+        progress.wordRange = nil
+        progress.readingOffset = nil
         dismissAfterDelay()
     }
 

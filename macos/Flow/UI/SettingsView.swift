@@ -71,6 +71,7 @@ struct FlowSettingsView: View {
                     showGoogleRoute: model.settings.speechSource == .google,
                     isDefault: true,
                     remove: {},
+                    onTestGoogleVoice: previewGoogleVoice,
                 )
                 ForEach($model.settings.languageRoutes) { $route in
                         CollapsibleLanguageRouteEditor(
@@ -81,9 +82,11 @@ struct FlowSettingsView: View {
                             showSystemRoute: model.settings.speechSource == .system,
                             showAzureRoute: model.settings.speechSource == .azure,
                             showGoogleRoute: model.settings.speechSource == .google,
-                    ) {
-                        model.settings.languageRoutes.removeAll { $0.id == route.id }
-                    }
+                            remove: {
+                                model.settings.languageRoutes.removeAll { $0.id == route.id }
+                            },
+                            onTestGoogleVoice: previewGoogleVoice,
+                    )
                 }
                 HStack {
                     Picker("Language", selection: $languageToAdd) {
@@ -130,6 +133,10 @@ struct FlowSettingsView: View {
         .padding()
     }
 
+    private func previewGoogleVoice(_ voice: GoogleVoiceCatalog.Voice) {
+        model.previewGoogleVoice(named: voice.name, languageTag: voice.languageCodes.first ?? model.settings.defaultLanguageTag)
+    }
+
     private func addLanguage(_ languageTag: String) {
         let azureVoice = model.azureVoices.first { $0.supports(languageTag: languageTag) }?.shortName
         let googleVoice = model.googleVoices.first { $0.supports(languageTag: languageTag) }?.name
@@ -144,6 +151,122 @@ struct FlowSettingsView: View {
     }
 }
 
+private struct GoogleVoiceMenu: View {
+    let voices: [GoogleVoiceCatalog.Voice]
+    @Binding var selection: String?
+    var onTest: ((GoogleVoiceCatalog.Voice) -> Void)?
+    @State private var showsContents = false
+
+    private var groups: [(family: GoogleVoiceCatalog.Voice.ModelFamily, voices: [GoogleVoiceCatalog.Voice])] {
+        GoogleVoiceCatalog.groupedByModelFamily(voices)
+    }
+
+    private var selectionTitle: String {
+        guard let name = selection else { return "Google default voice" }
+        return voices.first { $0.name == name }?.displayName ?? name
+    }
+
+    var body: some View {
+        Button {
+            showsContents = true
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectionTitle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.borderless)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .popover(isPresented: $showsContents, arrowEdge: .bottom) {
+            GoogleVoiceList(groups: groups, selection: $selection, onTest: onTest)
+        }
+    }
+}
+
+private struct GoogleVoiceList: View {
+    let groups: [(family: GoogleVoiceCatalog.Voice.ModelFamily, voices: [GoogleVoiceCatalog.Voice])]
+    @Binding var selection: String?
+    var onTest: ((GoogleVoiceCatalog.Voice) -> Void)?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
+                row(title: "Google default voice", isSelected: selection == nil) {
+                    selection = nil
+                    dismiss()
+                }
+                ForEach(groups, id: \.family) { group in
+                    Text(group.family.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                        .padding(.bottom, 2)
+                    ForEach(group.voices) { voice in
+                        HStack(spacing: 4) {
+                            row(title: voice.displayName, isSelected: selection == voice.name) {
+                                selection = voice.name
+                                dismiss()
+                            }
+                            if let onTest {
+                                Button {
+                                    onTest(voice)
+                                } label: {
+                                    Image(systemName: "play.circle")
+                                        .foregroundStyle(.tint)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Test voice")
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(8)
+        }
+        .frame(width: 300)
+        .frame(maxHeight: 440)
+    }
+
+    private func row(
+        title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void,
+    ) -> some View {
+        VoiceRow(title: title, isSelected: isSelected, action: action)
+    }
+}
+
+private struct VoiceRow: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: "checkmark")
+                .opacity(isSelected ? 1 : 0)
+                .font(.caption)
+                .frame(width: 16)
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .background(isHovered ? Color.accentColor.opacity(0.15) : .clear)
+        .cornerRadius(4)
+        .onHover { isHovered = $0 }
+    }
+}
+
 private struct LanguageRouteEditor: View {
     @Binding var route: FlowSettings.LanguageRoute
     let voices: [SystemSpeechEngine.Voice]
@@ -154,6 +277,7 @@ private struct LanguageRouteEditor: View {
     let showGoogleRoute: Bool
     let isDefault: Bool
     let remove: () -> Void
+    var onTestGoogleVoice: ((GoogleVoiceCatalog.Voice) -> Void)?
     var showsHeader = true
 
     private var matchingVoices: [SystemSpeechEngine.Voice] {
@@ -204,11 +328,8 @@ private struct LanguageRouteEditor: View {
                 }
             }
             if showGoogleRoute {
-                Picker("Google voice", selection: $route.googleVoiceName) {
-                    Text("Google default voice").tag(String?.none)
-                    ForEach(matchingGoogleVoices) { voice in
-                        Text(voice.displayName).tag(String?.some(voice.name))
-                    }
+                LabeledContent("Google voice") {
+                    GoogleVoiceMenu(voices: matchingGoogleVoices, selection: $route.googleVoiceName, onTest: onTestGoogleVoice)
                 }
                 if matchingGoogleVoices.isEmpty {
                     Text("No Google voices were loaded for \(route.displayName). The default voice may still be available.")
@@ -249,6 +370,7 @@ private struct CollapsibleLanguageRouteEditor: View {
     let showAzureRoute: Bool
     let showGoogleRoute: Bool
     let remove: () -> Void
+    var onTestGoogleVoice: ((GoogleVoiceCatalog.Voice) -> Void)?
     @State private var expanded = false
 
     var body: some View {
@@ -279,6 +401,7 @@ private struct CollapsibleLanguageRouteEditor: View {
                     showGoogleRoute: showGoogleRoute,
                     isDefault: false,
                     remove: {},
+                    onTestGoogleVoice: onTestGoogleVoice,
                     showsHeader: false,
                 )
             }
@@ -379,11 +502,14 @@ private struct SpeechConfigurationView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Picker("Google voice", selection: $model.settings.googleVoiceName) {
-                    Text("Google default voice").tag(String?.none)
-                    ForEach(defaultGoogleVoices) { voice in
-                        Text(voice.displayName).tag(String?.some(voice.name))
-                    }
+                LabeledContent("Google voice") {
+                    GoogleVoiceMenu(
+                        voices: defaultGoogleVoices,
+                        selection: $model.settings.googleVoiceName,
+                        onTest: { voice in
+                            model.previewGoogleVoice(named: voice.name, languageTag: voice.languageCodes.first ?? model.settings.defaultLanguageTag)
+                        },
+                    )
                 }
             }
             Button("Refresh Google voices") { model.refreshGoogleVoices() }
