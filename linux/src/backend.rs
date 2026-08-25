@@ -2,6 +2,7 @@
 
 use std::{
     collections::VecDeque,
+    fs,
     io::Write,
     sync::{
         Arc,
@@ -28,6 +29,7 @@ use flow_core::{
 use crate::{
     azure::{self, AzureVoice},
     google::{self, GoogleVoice},
+    piper::{self, PiperVoice},
     selection, settings, shortcuts,
     system_speech::{self, SystemVoice},
 };
@@ -65,6 +67,7 @@ struct Snapshot<'a> {
     system_voices: &'a [SystemVoice],
     azure_voices: &'a [AzureVoice],
     google_voices: &'a [GoogleVoice],
+    piper_voices: &'a [PiperVoice],
 }
 
 #[derive(QObject)]
@@ -95,6 +98,10 @@ pub struct FlowBackend {
     shortcut_status_changed: qt_signal!(),
     configuration_error: qt_property!(QString; NOTIFY configuration_error_changed),
     configuration_error_changed: qt_signal!(),
+    piper_status: qt_property!(QString; NOTIFY piper_status_changed),
+    piper_status_changed: qt_signal!(),
+    update_ready_version: qt_property!(QString; NOTIFY update_ready_version_changed),
+    update_ready_version_changed: qt_signal!(),
 
     play_cloud: qt_signal!(file_url: QString, word_timings_json: QString, rate: f64),
     segment_rate: qt_signal!(rate: f64),
@@ -102,6 +109,7 @@ pub struct FlowBackend {
     resume_playback: qt_signal!(),
     stop_audio: qt_signal!(),
     show_settings: qt_signal!(),
+    play_preview: qt_signal!(url: QString),
 
     playback_speed: qt_property!(f64; NOTIFY playback_speed_changed),
     playback_speed_changed: qt_signal!(),
@@ -114,6 +122,12 @@ pub struct FlowBackend {
     current_word_end: qt_property!(i32; NOTIFY current_word_end_changed),
     current_word_end_changed: qt_signal!(),
 
+    report_word_range: qt_method!(
+        fn report_word_range(&mut self, start: i32, end: i32) {
+            self.set_word_range(start, end);
+        }
+    ),
+
     start: qt_method!(
         fn start(&mut self) {
             self.start_services();
@@ -122,11 +136,6 @@ pub struct FlowBackend {
     read_selection: qt_method!(
         fn read_selection(&mut self) {
             self.request_selection();
-        }
-    ),
-    report_word_range: qt_method!(
-        fn report_word_range(&mut self, start: i32, end: i32) {
-            self.set_word_range(start, end);
         }
     ),
     open_settings: qt_method!(
@@ -356,6 +365,102 @@ pub struct FlowBackend {
             self.load_google_voices();
         }
     ),
+    refresh_piper_voices: qt_method!(
+        fn refresh_piper_voices(&mut self) {
+            self.load_piper_catalog();
+        }
+    ),
+    download_piper_voice: qt_method!(
+        fn download_piper_voice(&mut self, key: QString) {
+            self.start_piper_download(&key.to_string());
+        }
+    ),
+    preview_piper_voice: qt_method!(
+        fn preview_piper_voice(&mut self, key: QString) {
+            let key = key.to_string();
+            if !piper::is_installed(&key) {
+                return;
+            }
+            let Some(engine) = piper::find_engine() else {
+                self.piper_status = "Flow could not find the Piper speech engine.".into();
+                self.piper_status_changed();
+                return;
+            };
+            self.preview_generation += 1;
+            let generation = self.preview_generation;
+            let pointer = QPointer::from(&*self);
+            let deliver = queued_callback(move |result: Result<(u64, TempPath), String>| {
+                if let Some(backend) = pointer.as_pinned() {
+                    let mut backend = backend.borrow_mut();
+                    match result {
+                        Ok((sample_generation, path)) => {
+                            if sample_generation != backend.preview_generation {
+                                // A newer preview superseded this one; dropping
+                                // the path deletes its temp file.
+                                return;
+                            }
+                            let url = format!("file://{}", path.display());
+                            backend.preview_path = Some(path);
+                            backend.play_preview(url.into());
+                        }
+                        Err(message) => {
+                            backend.piper_status = message.into();
+                            backend.piper_status_changed();
+                        }
+                    }
+                }
+            });
+            std::thread::spawn(move || {
+                let result = piper::synthesize(&engine, &key, PREVIEW_TEXT)
+                    .and_then(|wav| write_preview_wav(&wav))
+                    .map(|path| (generation, path));
+                deliver(result);
+            });
+        }
+    ),
+    delete_piper_voice: qt_method!(
+        fn delete_piper_voice(&mut self, key: QString) {
+            let key = key.to_string();
+            let pointer = QPointer::from(&*self);
+            let deliver = queued_callback(move |result: Result<(), String>| {
+                if let Some(backend) = pointer.as_pinned() {
+                    let mut backend = backend.borrow_mut();
+                    match result {
+                        Ok(()) => backend.refresh_snapshot(),
+                        Err(message) => {
+                            backend.piper_status = message.into();
+                            backend.piper_status_changed();
+                        }
+                    }
+                }
+            });
+            std::thread::spawn(move || deliver(piper::delete_voice(&key)));
+        }
+    ),
+    check_for_updates: qt_method!(
+        fn check_for_updates(&mut self) {
+            self.start_update_check();
+        }
+    ),
+    restart_to_update: qt_method!(
+        fn restart_to_update(&mut self) {
+            if self.update_ready_version.is_empty() {
+                return;
+            }
+            self.persist_settings();
+            let pointer = QPointer::from(&*self);
+            let deliver = queued_callback(move |message: String| {
+                if let Some(backend) = pointer.as_pinned() {
+                    backend.borrow_mut().show_message(message);
+                }
+            });
+            std::thread::spawn(move || {
+                if let Err(message) = crate::updates::apply_staged_and_restart() {
+                    deliver(message);
+                }
+            });
+        }
+    ),
     play_test_voice: qt_method!(
         fn play_test_voice(&mut self) {
             let text = "Flow is ready to read selected text.".to_owned();
@@ -385,7 +490,9 @@ pub struct FlowBackend {
     system_voices: Vec<SystemVoice>,
     azure_voices: Vec<AzureVoice>,
     google_voices: Vec<GoogleVoice>,
+    piper_voices: Vec<PiperVoice>,
     audio_path: Option<TempPath>,
+    preview_path: Option<TempPath>,
     queued_audio_paths: VecDeque<TempPath>,
     queued_word_timings: VecDeque<Vec<google::WordTiming>>,
     queued_segment_speeds: VecDeque<Option<f64>>,
@@ -395,19 +502,22 @@ pub struct FlowBackend {
     selection_generation: Arc<AtomicU64>,
     dismiss_generation: Arc<AtomicU64>,
     playback_generation: Arc<AtomicU64>,
+    piper_downloading: Option<String>,
+    preview_generation: u64,
 }
 
 impl Default for FlowBackend {
     fn default() -> Self {
         let settings = settings::load();
-        let playback_speed = settings.playback_speed;
         let snapshot_json = serialize(&Snapshot {
             settings: &settings,
             supported_languages: language::supported_languages(),
             system_voices: &[],
             azure_voices: &[],
             google_voices: &[],
+            piper_voices: &[],
         });
+        let playback_speed = settings.playback_speed;
         Self {
             base: Default::default(),
             state: PlaybackState::Hidden.id().into(),
@@ -434,12 +544,17 @@ impl Default for FlowBackend {
             shortcut_status_changed: Default::default(),
             configuration_error: QString::default(),
             configuration_error_changed: Default::default(),
+            piper_status: QString::default(),
+            piper_status_changed: Default::default(),
+            update_ready_version: QString::default(),
+            update_ready_version_changed: Default::default(),
             play_cloud: Default::default(),
             segment_rate: Default::default(),
             pause_playback: Default::default(),
             resume_playback: Default::default(),
             stop_audio: Default::default(),
             show_settings: Default::default(),
+            play_preview: Default::default(),
             start: Default::default(),
             read_selection: Default::default(),
             report_word_range: Default::default(),
@@ -461,6 +576,12 @@ impl Default for FlowBackend {
             save_google_configuration: Default::default(),
             clear_google_configuration: Default::default(),
             refresh_google_voices: Default::default(),
+            refresh_piper_voices: Default::default(),
+            download_piper_voice: Default::default(),
+            preview_piper_voice: Default::default(),
+            delete_piper_voice: Default::default(),
+            check_for_updates: Default::default(),
+            restart_to_update: Default::default(),
             play_test_voice: Default::default(),
             set_playback_speed: Default::default(),
             settings,
@@ -471,7 +592,9 @@ impl Default for FlowBackend {
             system_voices: Vec::new(),
             azure_voices: Vec::new(),
             google_voices: Vec::new(),
+            piper_voices: Vec::new(),
             audio_path: None,
+            preview_path: None,
             queued_audio_paths: VecDeque::new(),
             queued_word_timings: VecDeque::new(),
             queued_segment_speeds: VecDeque::new(),
@@ -487,6 +610,8 @@ impl Default for FlowBackend {
             selection_generation: Arc::new(AtomicU64::new(0)),
             dismiss_generation: Arc::new(AtomicU64::new(0)),
             playback_generation: Arc::new(AtomicU64::new(0)),
+            piper_downloading: None,
+            preview_generation: 0,
         }
     }
 }
@@ -497,6 +622,11 @@ impl FlowBackend {
             return;
         }
         self.services_started = true;
+
+        // Chromium and Electron apps only expose their accessibility tree when
+        // assistive technology is enabled before they launch, so Flow turns it
+        // on at startup rather than waiting for the first capture.
+        std::thread::spawn(selection::enable_accessibility);
 
         let (sender, receiver) = mpsc::unbounded_channel();
         self.shortcut_commands = Some(sender);
@@ -580,6 +710,9 @@ impl FlowBackend {
         }
         if self.settings.google_api_key_configured {
             self.load_google_voices();
+        }
+        if self.settings.speech_source == SpeechSource::Piper {
+            self.load_piper_catalog();
         }
     }
 
@@ -758,6 +891,7 @@ impl FlowBackend {
             }
             SpeechSource::Azure => self.synthesize_azure(plan, generation),
             SpeechSource::Google => self.synthesize_google(plan, generation),
+            SpeechSource::Piper => self.synthesize_piper(plan, generation),
         }
     }
 
@@ -832,6 +966,62 @@ impl FlowBackend {
                     "Google Cloud could not synthesize this selection. Check the API key and voice."
                         .to_owned()
                 });
+            deliver(result);
+        });
+    }
+
+    fn synthesize_piper(&mut self, plan: Plan, generation: u64) {
+        let Some(engine) = piper::find_engine() else {
+            self.show_message(
+                "Flow could not find the Piper speech engine. Install piper, or run Flow from the AppImage that bundles it.",
+            );
+            return;
+        };
+        let mut voice_keys = Vec::with_capacity(plan.sentences.len());
+        for sentence in &plan.sentences {
+            let key = sentence
+                .route
+                .piper_voice_name
+                .clone()
+                .or_else(|| self.settings.piper_voice_name.clone());
+            let Some(key) = key else {
+                self.show_message("Choose a Piper voice in Flow's settings before reading.");
+                return;
+            };
+            if !piper::is_installed(&key) {
+                self.show_message(format!(
+                    "The {key} voice is not downloaded yet. Get it from Flow's settings."
+                ));
+                return;
+            }
+            voice_keys.push(key);
+        }
+        let current_generation = Arc::clone(&self.playback_generation);
+        let pointer = QPointer::from(&*self);
+        let deliver = queued_callback(
+            move |result: Result<Vec<(Vec<u8>, Vec<google::WordTiming>, Option<f64>)>, String>| {
+                if current_generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                if let Some(backend) = pointer.as_pinned() {
+                    let mut backend = backend.borrow_mut();
+                    match result {
+                        Ok(audio) => backend.play_cloud_audio(audio),
+                        Err(message) => backend.show_message(message),
+                    }
+                }
+            },
+        );
+        std::thread::spawn(move || {
+            let result = plan
+                .sentences
+                .iter()
+                .zip(&voice_keys)
+                .map(|(sentence, key)| {
+                    piper::synthesize(&engine, key, &sentence.text)
+                        .map(|audio| (audio, Vec::new(), None))
+                })
+                .collect::<Result<Vec<_>, String>>();
             deliver(result);
         });
     }
@@ -1037,6 +1227,11 @@ impl FlowBackend {
                         .any(|locale| language_base(locale) == language_base(language_tag))
                 })
                 .map(|voice| voice.name.clone());
+            route.piper_voice_name = self
+                .piper_voices
+                .iter()
+                .find(|voice| language_base(&voice.language_code) == language_base(language_tag))
+                .map(|voice| voice.key.clone());
             route.azure_speech_rate = self.settings.azure_speech_rate;
             route.google_speech_rate = self.settings.google_speech_rate;
             self.settings.language_routes.push(route);
@@ -1051,10 +1246,16 @@ impl FlowBackend {
                 self.settings.speech_source = match value {
                     "azure" => SpeechSource::Azure,
                     "google" => SpeechSource::Google,
+                    "piper" => SpeechSource::Piper,
                     _ => SpeechSource::System,
                 };
                 self.configuration_error = QString::default();
                 self.configuration_error_changed();
+                if self.settings.speech_source == SpeechSource::Piper
+                    && self.piper_voices.is_empty()
+                {
+                    self.load_piper_catalog();
+                }
             }
             "hotKey" => {
                 self.settings.hot_key = match value {
@@ -1114,6 +1315,7 @@ impl FlowBackend {
                     self.settings.google_speech_rate = rate.clamp(-1.0, 1.0);
                 }
             }
+            "piperVoiceName" => self.settings.piper_voice_name = nonempty(value),
             "defaultLanguageTag" => {
                 self.settings.default_language_tag = value.into();
                 self.settings.google_voice_name = None;
@@ -1155,6 +1357,7 @@ impl FlowBackend {
                         self.settings.google_speech_rate = rate.clamp(-1.0, 1.0);
                     }
                 }
+                "piperVoiceName" => self.settings.piper_voice_name = nonempty(value),
                 _ => return,
             }
         } else if let Some(route) = self
@@ -1182,6 +1385,7 @@ impl FlowBackend {
                         route.google_speech_rate = rate.clamp(-1.0, 1.0);
                     }
                 }
+                "piperVoiceName" => route.piper_voice_name = nonempty(value),
                 "playbackSpeed" => {
                     route.playback_speed = if value.is_empty() {
                         None
@@ -1305,6 +1509,99 @@ impl FlowBackend {
         });
     }
 
+    fn load_piper_catalog(&mut self) {
+        self.piper_status = "Loading Piper voices…".into();
+        self.piper_status_changed();
+        let pointer = QPointer::from(&*self);
+        let deliver = queued_callback(move |result: Result<Vec<PiperVoice>, String>| {
+            if let Some(backend) = pointer.as_pinned() {
+                let mut backend = backend.borrow_mut();
+                match result {
+                    Ok(voices) => {
+                        backend.piper_voices = voices;
+                        backend.piper_status = QString::default();
+                        backend.piper_status_changed();
+                        backend.refresh_snapshot();
+                    }
+                    Err(message) => {
+                        backend.piper_status = message.into();
+                        backend.piper_status_changed();
+                    }
+                }
+            }
+        });
+        std::thread::spawn(move || deliver(piper::fetch_catalog()));
+    }
+
+    fn start_piper_download(&mut self, key: &str) {
+        if self
+            .piper_downloading
+            .as_deref()
+            .is_some_and(|active| active == key)
+        {
+            return;
+        }
+        self.piper_downloading = Some(key.to_owned());
+        self.piper_status = format!("Downloading {key}…").into();
+        self.piper_status_changed();
+        let downloading = key.to_owned();
+        let pointer = QPointer::from(&*self);
+        let deliver = queued_callback(move |result: Result<(), String>| {
+            if let Some(backend) = pointer.as_pinned() {
+                let mut backend = backend.borrow_mut();
+                backend.piper_downloading = None;
+                match result {
+                    Ok(()) => {
+                        for voice in &mut backend.piper_voices {
+                            if voice.key == downloading {
+                                voice.installed = true;
+                            }
+                        }
+                        backend.piper_status = QString::default();
+                        backend.piper_status_changed();
+                        backend.refresh_snapshot();
+                    }
+                    Err(message) => {
+                        backend.piper_status = message.into();
+                        backend.piper_status_changed();
+                    }
+                }
+            }
+        });
+        let key = key.to_owned();
+        std::thread::spawn(move || deliver(piper::download_voice(&key)));
+    }
+
+    fn start_update_check(&mut self) {
+        let pointer = QPointer::from(&*self);
+        let deliver = queued_callback(move |result: Result<crate::updates::Outcome, String>| {
+            if let Some(backend) = pointer.as_pinned() {
+                let mut backend = backend.borrow_mut();
+                if let Ok(crate::updates::Outcome::Staged(version)) = &result {
+                    backend.update_ready_version = version.clone().into();
+                    backend.update_ready_version_changed();
+                }
+                // Never interrupt active reading for an update check.
+                let message = match result {
+                    Ok(crate::updates::Outcome::UpToDate) => "Flow is up to date.".to_owned(),
+                    Ok(crate::updates::Outcome::Staged(version)) => {
+                        format!("Flow {version} is downloaded. Restart Flow to finish updating.")
+                    }
+                    Err(message) => message,
+                };
+                if backend.playback_state == PlaybackState::Hidden {
+                    backend.show_message(message);
+                } else {
+                    backend.message = message.into();
+                    backend.message_changed();
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            deliver(crate::updates::check());
+        });
+    }
+
     fn persist_settings(&mut self) {
         if settings::save(&self.settings).is_err() {
             self.configuration_error = "Flow could not save its settings.".into();
@@ -1320,9 +1617,26 @@ impl FlowBackend {
             system_voices: &self.system_voices,
             azure_voices: &self.azure_voices,
             google_voices: &self.google_voices,
+            piper_voices: &self.piper_voices,
         })
         .into();
         self.snapshot_json_changed();
+    }
+
+    fn set_language_override(&mut self, value: Option<String>) {
+        self.language_override = value.clone();
+        self.text_language_override = value.unwrap_or_default().into();
+        self.text_language_override_changed();
+    }
+
+    fn set_word_range(&mut self, start: i32, end: i32) {
+        if self.current_word_start == start && self.current_word_end == end {
+            return;
+        }
+        self.current_word_start = start;
+        self.current_word_start_changed();
+        self.current_word_end = end;
+        self.current_word_end_changed();
     }
 
     fn set_state(&mut self, state: PlaybackState) {
@@ -1341,23 +1655,6 @@ impl FlowBackend {
         self.popup_visible = visible;
         self.popup_visible_changed();
     }
-
-    // Keeps the QML-facing string property and the Rust-side option in sync.
-    fn set_language_override(&mut self, value: Option<String>) {
-        self.language_override = value.clone();
-        self.text_language_override = value.unwrap_or_default().into();
-        self.text_language_override_changed();
-    }
-
-    fn set_word_range(&mut self, start: i32, end: i32) {
-        if self.current_word_start == start && self.current_word_end == end {
-            return;
-        }
-        self.current_word_start = start;
-        self.current_word_start_changed();
-        self.current_word_end = end;
-        self.current_word_end_changed();
-    }
 }
 
 impl Drop for FlowBackend {
@@ -1375,6 +1672,83 @@ fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+const PREVIEW_TEXT: &str = "Hello! This is how this voice sounds.";
+
+/// Writes a preview sample to a temp WAV the QML player keeps open. The path
+/// stays alive through `preview_path` until the next preview replaces it.
+fn write_preview_wav(bytes: &[u8]) -> Result<TempPath, String> {
+    tempfile::Builder::new()
+        .prefix("flow-preview-")
+        .suffix(".wav")
+        .tempfile()
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.flush()?;
+            Ok(file.into_temp_path())
+        })
+        .map_err(|_| "Flow could not save the voice preview.".to_owned())
+}
+
+/// Copies the bundled Flow icons into the user's hicolor icon theme so the
+/// tray and app launcher resolve them by name. Qt does not deliver file-URL
+/// tray icons over StatusNotifier, so a theme icon name is required. Called
+/// from main before the QML loads so the very first launch finds the icons.
+pub fn install_theme_icons() {
+    const ICON_NAME: &str = "io.github.jdreioe.flow.png";
+    const SIZES: [(&str, &str); 3] = [
+        ("16", "flow-16.png"),
+        ("32", "flow-32.png"),
+        ("48", "flow-48.png"),
+    ];
+    let Some(theme_root) =
+        directories::BaseDirs::new().map(|dirs| dirs.data_dir().join("icons").join("hicolor"))
+    else {
+        return;
+    };
+    for (size, file) in SIZES {
+        let Some(source) = icon_source(file) else {
+            continue;
+        };
+        let target = theme_root
+            .join(format!("{size}x{size}"))
+            .join("apps")
+            .join(ICON_NAME);
+        if target
+            .parent()
+            .is_none_or(|dir| fs::create_dir_all(dir).is_err())
+            || fs::copy(&source, &target).is_err()
+        {
+            // Best effort only; a desktop-installed Flow icon may already exist.
+        }
+    }
+}
+
+/// Locates a bundled icon next to the executable (installed layout), in the
+/// repository layout relative to it, or relative to the working directory so
+/// development builds find it too.
+fn icon_source(file: &str) -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .into_iter()
+        .flat_map(|dir| {
+            vec![
+                dir.join("assets").join(file),
+                dir.join("..")
+                    .join("..")
+                    .join("linux")
+                    .join("assets")
+                    .join(file),
+            ]
+        })
+        .chain(std::iter::once(
+            std::path::PathBuf::from("linux/assets").join(file),
+        ))
+        .find(|path| path.is_file())
+}
+
+/// Retains source paragraph breaks without changing the one-code-unit sentence
+/// separators used by the Google word-boundary offsets.
 /// Retains source paragraph breaks without changing the one-code-unit sentence
 /// separators used by the word-boundary offsets. Alongside the display text it
 /// returns each sentence's UTF-16 offset, the coordinate space shared by the

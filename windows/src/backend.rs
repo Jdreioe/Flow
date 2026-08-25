@@ -750,6 +750,9 @@ impl FlowBackend {
             }
             SpeechSource::Azure => self.synthesize_azure(plan, generation),
             SpeechSource::Google => self.synthesize_google(plan, generation),
+            SpeechSource::Piper => {
+                self.show_message("Piper voices are currently available in Flow for Linux.");
+            }
         }
     }
 

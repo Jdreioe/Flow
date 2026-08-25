@@ -1,0 +1,43 @@
+name: Release Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release candidate version, e.g. 0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    # Pin to an older runner so the AppImage links against an older glibc
+    # and still runs on widely used distributions.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.0"
+          cache: true
+
+      - name: Build and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/release-linux.sh "${{ inputs.version }}"

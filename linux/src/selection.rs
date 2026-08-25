@@ -1,14 +1,19 @@
 use std::{io::Read, time::Duration};
 
-use atspi_common::{Interface, MatchType, ObjectMatchRule, SortOrder, State};
+use atspi_common::{Interface, MatchType, ObjectMatchRule, ObjectRefOwned, SortOrder, State};
 use atspi_connection::set_session_accessibility;
 use atspi_proxies::{accessible::ObjectRefExt, proxy_ext::ProxyExt};
+use futures_util::StreamExt;
 use thiserror::Error;
 use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
 
 use flow_core::model::MAXIMUM_SELECTION_CHARACTERS;
 
 const MAXIMUM_VISITED_ELEMENTS_PER_WINDOW: usize = 2_000;
+
+/// Concurrent AT-SPI round trips per window sweep. Browsers expose thousands
+/// of text nodes; serial queries take seconds, parallel ones stay fast.
+const CONCURRENT_NODE_QUERIES: usize = 16;
 
 struct SearchRoot {
     application_name: String,
@@ -26,9 +31,11 @@ pub enum SelectionError {
 /// Reads selected text from the desktop's AT-SPI trees.
 ///
 /// Flow never asks for an object's complete text value: only explicit AT-SPI
-/// selection ranges are resolved. Active windows are checked first. Other
-/// windows are then checked because opening a tray menu can remove the active
-/// state from the application whose selection the user wants to read.
+/// selection ranges are resolved. The focused window is checked first, then
+/// other active windows, because AT-SPI reflects the user's current selection
+/// even when it was made with the keyboard. The compositor's primary
+/// selection is only a fallback: many applications never update it for
+/// keyboard selections, so it can hold a stale value indefinitely.
 pub async fn read_focused_selection() -> Result<String, SelectionError> {
     if set_session_accessibility(true).await.is_err() {
         return primary_selection_or_unavailable("unknown");
@@ -44,6 +51,7 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
         return primary_selection_or_unavailable("unknown");
     };
 
+    let mut focused_roots = Vec::new();
     let mut active_roots = Vec::new();
     let mut other_roots = Vec::new();
     for application in applications {
@@ -64,36 +72,70 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
             let Ok(frame_proxy) = frame.clone().into_accessible_proxy(connection).await else {
                 continue;
             };
-            if frame_proxy
-                .get_state()
-                .await
-                .is_ok_and(|state| state.contains(State::Active))
-            {
-                active_roots.push(SearchRoot {
-                    application_name: application_name.clone(),
-                    object: frame,
-                });
+            let search_root = SearchRoot {
+                application_name: application_name.clone(),
+                object: frame,
+            };
+            let state = frame_proxy.get_state().await.unwrap_or_default();
+            if state.contains(State::Focused) {
+                focused_roots.push(search_root);
+            } else if state.contains(State::Active) {
+                active_roots.push(search_root);
             } else {
-                other_roots.push(SearchRoot {
-                    application_name: application_name.clone(),
-                    object: frame,
-                });
+                other_roots.push(search_root);
             }
         }
     }
 
     let mut found_text_interface = false;
-    let active_application_names = active_roots
+    let active_application_names = focused_roots
         .iter()
+        .chain(&active_roots)
         .map(|root| root.application_name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     debug_active_applications(&active_application_names);
 
-    // The compositor owns the primary selection and updates it whenever the
-    // user highlights text. Prefer it when available because some AT-SPI
-    // bridges leave multiple windows marked Active and retain stale ranges.
-    if let Some(text) = read_primary_selection() {
+    // The compositor's primary selection is read up front because it is the
+    // fastest signal available, but the AT-SPI search wins if it answers
+    // within the grace period: accessibility reflects the user's current
+    // selection even when it was made with the keyboard, while the primary
+    // selection can hold a stale value indefinitely. All windows join the
+    // race because several Wayland apps (Firefox, Electron) never mark their
+    // windows Active or Focused over AT-SPI, so restricting the race to
+    // active windows would always fall through to a stale primary value.
+    other_roots.reverse();
+    let primary_text = read_primary_selection();
+    let search = search_windows(
+        &atspi,
+        focused_roots
+            .iter()
+            .chain(&active_roots)
+            .chain(&other_roots),
+    );
+    tokio::pin!(search);
+    let mut search_found_text_interface = false;
+    let atspi_text = if primary_text.is_some() {
+        let grace = tokio::time::sleep(Duration::from_millis(750));
+        tokio::pin!(grace);
+        tokio::select! {
+            result = &mut search => {
+                search_found_text_interface = result.found_text_interface;
+                result.text
+            }
+            _ = &mut grace => None,
+        }
+    } else {
+        let result = search.await;
+        search_found_text_interface = result.found_text_interface;
+        result.text
+    };
+    found_text_interface |= search_found_text_interface;
+    if let Some(text) = atspi_text {
+        debug_selection("AT-SPI", "focused or active", &text);
+        return Ok(text);
+    }
+    if let Some(text) = primary_text {
         let application_name = if active_application_names.is_empty() {
             "unknown"
         } else {
@@ -103,32 +145,32 @@ pub async fn read_focused_selection() -> Result<String, SelectionError> {
         return Ok(text);
     }
 
-    for root in active_roots {
-        let result = selected_text_in_window(&atspi, root.object).await;
-        found_text_interface |= result.found_text_interface;
-        if let Some(text) = result.text {
-            debug_selection("AT-SPI", &root.application_name, &text);
-            return Ok(text);
-        }
-    }
-
-    // Newly registered applications are usually the most recently used, which
-    // is the best available ordering once a tray interaction has moved focus.
-    other_roots.reverse();
-    for root in other_roots {
-        let result = selected_text_in_window(&atspi, root.object).await;
-        found_text_interface |= result.found_text_interface;
-        if let Some(text) = result.text {
-            debug_selection("AT-SPI fallback", &root.application_name, &text);
-            return Ok(text);
-        }
-    }
-
     Err(if found_text_interface {
         SelectionError::NoSelectedText
     } else {
         SelectionError::Unavailable
     })
+}
+
+/// Walks the given windows in priority order and returns the first explicit
+/// text selection, plus whether any window exposed a text interface at all.
+async fn search_windows<'a, I>(
+    atspi: &atspi_connection::AccessibilityConnection,
+    roots: I,
+) -> SearchResult
+where
+    I: Iterator<Item = &'a SearchRoot>,
+{
+    let mut result = SearchResult::default();
+    for root in roots {
+        let window = selected_text_in_window(atspi, root.object.clone()).await;
+        result.found_text_interface |= window.found_text_interface;
+        if let Some(text) = window.text {
+            result.text = Some(text);
+            return result;
+        }
+    }
+    result
 }
 
 fn primary_selection_or_unavailable(application_name: &str) -> Result<String, SelectionError> {
@@ -145,6 +187,14 @@ pub fn debug_enabled() -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
+}
+
+/// Enables the accessibility bus as early as possible. Chromium and Electron
+/// applications only build their accessibility tree when assistive technology
+/// is already enabled at their launch, so Flow turns it on during startup —
+/// the Linux counterpart of preparing apps on macOS.
+pub async fn enable_accessibility() {
+    let _ = set_session_accessibility(true).await;
 }
 
 #[cfg(debug_assertions)]
@@ -221,6 +271,10 @@ struct SearchResult {
     found_text_interface: bool,
 }
 
+/// Breadth-first sweep of a window's accessibility tree, querying nodes in
+/// parallel. The Collection shortcut is tried first because some apps answer
+/// it instantly, but Firefox's implementation returns nothing, so the sweep
+/// is what actually finds selections in browsers.
 async fn selected_text_in_window(
     atspi: &atspi_connection::AccessibilityConnection,
     root: atspi_common::ObjectRefOwned,
@@ -230,9 +284,6 @@ async fn selected_text_in_window(
         return SearchResult::default();
     };
 
-    // Collection performs the potentially large tree search inside the
-    // application. This avoids exhausting the traversal bound on toolbars and
-    // menus before reaching an editor or document.
     if let Ok(proxies) = root_proxy.proxies().await
         && let Ok(collection) = proxies.collection().await
     {
@@ -244,71 +295,116 @@ async fn selected_text_in_window(
             .await
             && !objects.is_empty()
         {
-            for object in objects {
-                if let Some(text) = explicit_selection(atspi, object).await {
-                    return SearchResult {
-                        text: Some(text),
-                        found_text_interface: true,
-                    };
-                }
+            let result = first_selection(atspi, objects.into_iter()).await;
+            if result.text.is_some() || result.found_text_interface {
+                return result;
             }
-            return SearchResult {
-                text: None,
-                found_text_interface: true,
-            };
         }
     }
 
     let mut result = SearchResult::default();
-    let mut stack = vec![root];
     let mut remaining = MAXIMUM_VISITED_ELEMENTS_PER_WINDOW;
-    while let Some(object) = stack.pop() {
-        if remaining == 0 {
-            break;
-        }
-        remaining -= 1;
-        if object.is_null() {
-            continue;
-        }
-        let Ok(proxy) = object.clone().into_accessible_proxy(connection).await else {
-            continue;
-        };
-        if let Ok(proxies) = proxy.proxies().await
-            && proxies.text().await.is_ok()
-        {
-            result.found_text_interface = true;
-            if let Some(text) = explicit_selection(atspi, object).await {
-                result.text = Some(text);
-                return result;
+    let mut level = vec![root];
+    while remaining > 0 && !level.is_empty() {
+        remaining = remaining.saturating_sub(level.len());
+        let outcomes: Vec<((bool, Option<String>), Vec<ObjectRefOwned>)> =
+            futures_util::stream::iter(level.drain(..).filter(|object| !object.is_null()))
+                .map(|object| {
+                    let connection = connection.clone();
+                    async move {
+                        let selection = node_selection(&connection, object.clone()).await;
+                        let children = match object.into_accessible_proxy(&connection).await {
+                            Ok(proxy) => proxy.get_children().await.unwrap_or_default(),
+                            Err(_) => Vec::new(),
+                        };
+                        (selection, children)
+                    }
+                })
+                .buffered(CONCURRENT_NODE_QUERIES)
+                .collect()
+                .await;
+        let mut next_level = Vec::new();
+        for ((has_text, selection), children) in outcomes {
+            result.found_text_interface |= has_text;
+            if result.text.is_none() {
+                result.text = selection;
             }
+            next_level.extend(children);
         }
-        if let Ok(children) = proxy.get_children().await {
-            stack.extend(children.into_iter().rev());
+        if result.text.is_some() {
+            return result;
+        }
+        level = next_level;
+    }
+    result
+}
+
+/// First non-empty selection among the given objects, queried in parallel
+/// while preserving their order.
+async fn first_selection<I>(
+    atspi: &atspi_connection::AccessibilityConnection,
+    objects: I,
+) -> SearchResult
+where
+    I: Iterator<Item = atspi_common::ObjectRefOwned>,
+{
+    let connection = atspi.connection();
+    let outcomes: Vec<(bool, Option<String>)> =
+        futures_util::stream::iter(objects.filter(|object| !object.is_null()))
+            .map(|object| {
+                let connection = connection.clone();
+                async move { node_selection(&connection, object).await }
+            })
+            .buffered(CONCURRENT_NODE_QUERIES)
+            .collect()
+            .await;
+    let mut result = SearchResult::default();
+    for (has_text, selection) in outcomes {
+        result.found_text_interface |= has_text;
+        if result.text.is_none() {
+            result.text = selection;
         }
     }
     result
 }
 
-async fn explicit_selection(
-    atspi: &atspi_connection::AccessibilityConnection,
+/// Whether an object exposes a text interface and, if so, its first
+/// non-empty selection. Selections that only contain object-replacement
+/// characters are embedded graphics or widgets, not readable text.
+async fn node_selection(
+    connection: &zbus::Connection,
     object: atspi_common::ObjectRefOwned,
-) -> Option<String> {
-    let proxy = object
-        .into_accessible_proxy(atspi.connection())
-        .await
-        .ok()?;
-    let proxies = proxy.proxies().await.ok()?;
-    let text_proxy = proxies.text().await.ok()?;
-    let count = text_proxy.get_n_selections().await.ok()?;
+) -> (bool, Option<String>) {
+    let Ok(proxy) = object.into_accessible_proxy(connection).await else {
+        return (false, None);
+    };
+    let Ok(proxies) = proxy.proxies().await else {
+        return (false, None);
+    };
+    let Ok(text_proxy) = proxies.text().await else {
+        return (false, None);
+    };
+    let Ok(count) = text_proxy.get_n_selections().await else {
+        return (true, None);
+    };
     for index in 0..count {
-        let (start, end) = text_proxy.get_selection(index).await.ok()?;
+        let Ok((start, end)) = text_proxy.get_selection(index).await else {
+            continue;
+        };
         if end <= start {
             continue;
         }
-        let text = text_proxy.get_text(start, end).await.ok()?;
-        if !text.trim().is_empty() {
-            return Some(text);
+        let Ok(text) = text_proxy.get_text(start, end).await else {
+            continue;
+        };
+        if has_readable_content(&text) {
+            return (true, Some(text));
         }
     }
-    None
+    (true, None)
+}
+
+fn has_readable_content(text: &str) -> bool {
+    text.chars()
+        .any(|character| character != '\u{FFFC}' && !character.is_whitespace())
 }

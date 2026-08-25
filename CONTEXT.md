@@ -13,8 +13,8 @@ Text captured from the focused application through Accessibility.
 _Avoid_: clipboard text, copied text
 
 **Speech source**:
-The chosen synthesis provider: system voices, Azure Speech, or Google Cloud
-Text-to-Speech.
+The chosen synthesis provider: system voices, local Piper models, Azure
+Speech, or Google Cloud Text-to-Speech.
 _Avoid_: engine, backend, TTS provider
 
 **BYOK credential**:

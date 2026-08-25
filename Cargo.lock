@@ -811,6 +811,7 @@ dependencies = [
  "uuid",
  "wl-clipboard-rs",
  "x11-clipboard",
+ "zbus",
 ]
 
 [[package]]

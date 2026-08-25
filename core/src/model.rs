@@ -11,6 +11,7 @@ pub enum SpeechSource {
     System,
     Azure,
     Google,
+    Piper,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,6 +68,7 @@ pub struct LanguageRoute {
     pub azure_speech_rate: f64,
     pub google_voice_name: Option<String>,
     pub google_speech_rate: f64,
+    pub piper_voice_name: Option<String>,
     pub playback_speed: Option<f64>,
 }
 
@@ -97,6 +99,7 @@ impl Default for LanguageRoute {
             azure_speech_rate: 0.0,
             google_voice_name: None,
             google_speech_rate: 0.0,
+            piper_voice_name: None,
             playback_speed: None,
         }
     }
@@ -118,6 +121,7 @@ pub struct Settings {
     pub google_voice_name: Option<String>,
     pub google_speech_rate: f64,
     pub google_api_key_configured: bool,
+    pub piper_voice_name: Option<String>,
     pub playback_speed: f64,
     pub default_language_tag: String,
     pub language_switching_enabled: bool,
@@ -141,6 +145,7 @@ impl Default for Settings {
             google_voice_name: None,
             google_speech_rate: 0.0,
             google_api_key_configured: false,
+            piper_voice_name: None,
             playback_speed: 1.0,
             default_language_tag: "en-US".into(),
             language_switching_enabled: true,
@@ -161,6 +166,7 @@ impl Settings {
             azure_speech_rate: self.azure_speech_rate,
             google_voice_name: self.google_voice_name.clone(),
             google_speech_rate: self.google_speech_rate,
+            piper_voice_name: self.piper_voice_name.clone(),
             playback_speed: None,
         }
     }
