@@ -102,11 +102,15 @@ explains key restrictions and rotation.
 - AT-SPI selected-text capture with a non-destructive primary-selection fallback
 - System, Azure, and Google Cloud voices, speech rate, pause/resume, stop, and
   test playback
+- Offline Piper voices with an in-app voice catalog and one-time model
+  downloads from Hugging Face
 - Sentence-level on-device language detection across Flow's ten languages
 - Language review when detection is uncertain or a language is not configured
 - Per-language system/Azure/Google routing and Azure multilingual mode
 - Configurable popup dismissal and same-selection behavior
 - A roughly ten-minute selection limit and no reading history
+- Bundled Flow tray icon, a What's New link, and AppImage self-updates
+  (check, download, and restart to update) from GitHub Releases
 
 Linux uses the XDG portal, AT-SPI, Secret Service, Speech Dispatcher, and Qt
 Multimedia where macOS uses Carbon, Accessibility, Keychain, AVFoundation, and
