@@ -84,9 +84,6 @@ chmod +x "$LINUXDEPLOY" "$LINUXDEPLOY_QT"
 # every imported module ships inside the AppImage.
 export QML_SOURCES_PATHS="$PROJECT_ROOT/linux/qml"
 export EXTRA_QT_PLUGINS="svg;multimedia"
-# Ship the Wayland platform plugins so the AppImage runs natively on
-# Wayland instead of falling back to XWayland.
-export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
 export LD_LIBRARY_PATH="$APPDIR/usr/bin:${LD_LIBRARY_PATH:-}"
 export PATH="$BUILD_DIR/tools:$PATH"
 (
