@@ -76,8 +76,9 @@ where
             );
         }
     };
+    let trigger = hot_key.preferred_trigger();
     let shortcut = NewShortcut::new("read-selection", "Read selected text")
-        .preferred_trigger(Some(hot_key.preferred_trigger()));
+        .preferred_trigger(Some(trigger.as_str()));
     let request = match portal
         .bind_shortcuts(
             &session,
