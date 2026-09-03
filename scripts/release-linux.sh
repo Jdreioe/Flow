@@ -80,10 +80,13 @@ export QML_SOURCES_PATHS="$PROJECT_ROOT/linux/qml"
 export EXTRA_QT_PLUGINS="svg;multimedia"
 export LD_LIBRARY_PATH="$APPDIR/usr/bin:${LD_LIBRARY_PATH:-}"
 export PATH="$BUILD_DIR/tools:$PATH"
-"$LINUXDEPLOY" --appimage-extract-and-run \
-    --appdir "$APPDIR" \
-    --plugin qt \
-    --output appimage
+(
+    cd "$BUILD_DIR"
+    "$LINUXDEPLOY" --appimage-extract-and-run \
+        --appdir "$APPDIR" \
+        --plugin qt \
+        --output appimage
+)
 
 BUILT_APPIMAGE="$(find "$BUILD_DIR" -maxdepth 2 -name '*.AppImage' ! -path '*/tools/*' | head -n 1)"
 [ -n "$BUILT_APPIMAGE" ] || { echo "error: linuxdeploy produced no AppImage" >&2; exit 1; }
