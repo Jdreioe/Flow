@@ -74,6 +74,7 @@ chmod +x "$LINUXDEPLOY"
 # every imported module ships inside the AppImage.
 export QML_SOURCES_PATHS="$PROJECT_ROOT/linux/qml"
 export EXTRA_QT_PLUGINS="svg;multimedia"
+export LD_LIBRARY_PATH="$APPDIR/usr/bin:${LD_LIBRARY_PATH:-}"
 "$LINUXDEPLOY" --appimage-extract-and-run \
     --appdir "$APPDIR" \
     --plugin qt \
