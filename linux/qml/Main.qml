@@ -183,7 +183,7 @@ ApplicationWindow {
     }
 
     function allRoutes() {
-        let defaultRoute = {
+        let fallbackRoute = {
             id: "00000000-0000-0000-0000-000000000001",
             languageTag: settings.defaultLanguageTag,
             systemVoiceName: settings.systemVoiceName,
@@ -194,7 +194,16 @@ ApplicationWindow {
             googleSpeechRate: settings.googleSpeechRate,
             piperVoiceName: settings.piperVoiceName
         }
-        return [defaultRoute].concat(settings.languageRoutes)
+        return [fallbackRoute].concat(settings.languageRoutes)
+    }
+
+    function missingRouteLanguage() {
+        for (let tag of detectedLanguages) {
+            if (!settings.languageRoutes.some(function(route) {
+                return route.languageTag.split("-")[0] === tag.split("-")[0]
+            })) return tag
+        }
+        return ""
     }
 
     function voicesFor(languageTag) {
@@ -544,19 +553,7 @@ ApplicationWindow {
                     visible: backend.state === "awaitingRoute"
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: backend.manual_route_needed
-                        ? qsTr("Choose how Flow should read this sentence before playback starts.")
-                        : qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
-                }
-
-                Label {
-                    visible: backend.manual_route_needed
-                    Layout.fillWidth: true
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                    wrapMode: Text.WordWrap
-                    text: backend.manual_route_sentence_text
-                    Accessible.name: qsTr("Sentence requiring a voice choice")
+                    text: qsTr("Pick a voice for %1 to start reading.").arg(root.languageName(backend.text_language_override))
                 }
 
                 Label {
@@ -564,6 +561,18 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     text: backend.message
+                }
+
+                Button {
+                    property string missingLanguage: root.missingRouteLanguage()
+                    visible: missingLanguage !== ""
+                        && (backend.state === "playing" || backend.state === "paused")
+                    Layout.fillWidth: true
+                    text: qsTr("Reading %1 with %2 voice — tap to fix")
+                        .arg(root.languageName(missingLanguage))
+                        .arg(root.languageName(settings.defaultLanguageTag))
+                    onClicked: backend.fix_missing_route(missingLanguage)
+                    Accessible.name: text
                 }
 
                 Label {
@@ -621,8 +630,7 @@ ApplicationWindow {
 
                 ComboBox {
                     id: overrideRoutePicker
-                    visible: (backend.text_language_override !== "" && backend.override_needs_route)
-                        || backend.manual_route_needed
+                    visible: backend.text_language_override !== "" && backend.override_needs_route
                     property string chosenRouteId: ""
                     onVisibleChanged: if (!visible) chosenRouteId = ""
                     Layout.preferredWidth: 260
@@ -646,9 +654,7 @@ ApplicationWindow {
                         chosenRouteId = currentValue
                         backend.set_override_route(currentValue)
                     }
-                    Accessible.name: backend.manual_route_needed
-                        ? qsTr("Read this sentence as")
-                        : qsTr("Read the overridden language as")
+                    Accessible.name: qsTr("Read the overridden language as")
                 }
 
                 ScrollView {
@@ -1108,7 +1114,7 @@ ApplicationWindow {
                                 id: languageToAdd
                                 Layout.fillWidth: true
                                 model: snapshot.supportedLanguages.filter(function(entry) {
-                                    return !root.allRoutes().some(function(route) {
+                                    return !settings.languageRoutes.some(function(route) {
                                         return route.languageTag.split("-")[0] === entry[0].split("-")[0]
                                     })
                                 })

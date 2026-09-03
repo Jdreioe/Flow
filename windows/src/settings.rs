@@ -2,12 +2,31 @@ use std::{fs, io, path::PathBuf};
 
 use directories::ProjectDirs;
 use flow_core::model::Settings;
+use uuid::Uuid;
 
 pub fn load() -> Settings {
     settings_path()
         .and_then(|path| fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| migrate(&bytes))
         .unwrap_or_default()
+}
+
+fn migrate(bytes: &[u8]) -> Option<Settings> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let per_language =
+        value.get("azureVoiceMode").and_then(|mode| mode.as_str()) == Some("perLanguage");
+    let mut settings: Settings = serde_json::from_value(value).ok()?;
+    if per_language
+        && !settings.language_routes.iter().any(|route| {
+            flow_core::model::language_base(&route.language_tag)
+                == flow_core::model::language_base(&settings.default_language_tag)
+        })
+    {
+        let mut route = settings.fallback_route();
+        route.id = Uuid::new_v4();
+        settings.language_routes.insert(0, route);
+    }
+    Some(settings)
 }
 
 pub fn save(settings: &Settings) -> io::Result<()> {

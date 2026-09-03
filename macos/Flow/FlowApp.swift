@@ -164,7 +164,6 @@ final class FlowModel: ObservableObject {
     @Published private(set) var languagePlan: LanguageFlow.Plan?
     @Published private(set) var textLanguageOverride: String?
     @Published private(set) var overrideNeedsRoute = false
-    @Published private(set) var manualRouteNeeded = false
     @Published var settings: FlowSettings {
         didSet {
             saveSettings()
@@ -283,7 +282,7 @@ final class FlowModel: ObservableObject {
         if activeSpeech === googleSpeech { stop() }
         previewTask?.cancel()
         previewPlayer?.stop()
-        var route = settings.defaultLanguageRoute
+        var route = settings.fallbackRoute
         route.languageTag = languageTag
         route.googleVoiceName = voiceName
         route.playbackSpeed = nil
@@ -291,7 +290,6 @@ final class FlowModel: ObservableObject {
             text: "Hello, this is what Flow sounds like with this voice.",
             detectedLanguageTag: languageTag,
             route: route,
-            needsReview: false,
             detectedButUnconfigured: false,
         )])
         previewTask = Task {
@@ -347,7 +345,6 @@ final class FlowModel: ObservableObject {
         let hadLanguageOverride = textLanguageOverride != nil
         textLanguageOverride = nil
         overrideNeedsRoute = false
-        manualRouteNeeded = false
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
             showMessage(L10n.string("Flow needs Accessibility permission to read selected text."))
@@ -395,8 +392,35 @@ final class FlowModel: ObservableObject {
         return tags
     }
 
-    var manualRouteSentenceText: String? {
-        languagePlan?.sentences.first(where: \.needsReview)?.text
+    var missingRouteLanguage: String? {
+        languagePlan?.sentences.first(where: \.detectedButUnconfigured)?.detectedLanguageTag
+    }
+
+    func addLanguageRoute(_ languageTag: String) {
+        guard settings.languageRoute(for: languageTag) == nil else { return }
+        settings.languageRoutes.append(suggestedRoute(for: languageTag))
+    }
+
+    func fixMissingRoute(_ languageTag: String) {
+        addLanguageRoute(languageTag)
+        guard let route = settings.languageRoute(for: languageTag), var plan = languagePlan else { return }
+        for index in plan.sentences.indices where plan.sentences[index].detectedLanguageTag == languageTag {
+            plan.sentences[index].route = route
+            plan.sentences[index].detectedButUnconfigured = false
+        }
+        startReading(text: selectedText, plan: plan)
+    }
+
+    private func suggestedRoute(for languageTag: String) -> FlowSettings.LanguageRoute {
+        FlowSettings.LanguageRoute(
+            languageTag: languageTag,
+            systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier,
+            azureVoiceName: azureVoices.first { $0.supports(languageTag: languageTag) }?.shortName
+                ?? settings.azureVoiceName,
+            azureSpeechRate: settings.azureSpeechRate,
+            googleVoiceName: googleVoices.first { $0.supports(languageTag: languageTag) }?.name,
+            googleSpeechRate: settings.googleSpeechRate
+        )
     }
 
     func setRoute(_ routeID: UUID, forAllDetectedLanguage languageTag: String) {
@@ -404,7 +428,6 @@ final class FlowModel: ObservableObject {
               var plan = languagePlan else { return }
         for index in plan.sentences.indices where plan.sentences[index].detectedLanguageTag == languageTag {
             plan.sentences[index].route = route
-            plan.sentences[index].needsReview = false
         }
         startReading(text: selectedText, plan: plan)
     }
@@ -439,48 +462,25 @@ final class FlowModel: ObservableObject {
     }
 
     func applyOverrideRoute(_ routeID: UUID) {
-        guard (textLanguageOverride != nil || manualRouteNeeded),
+        guard textLanguageOverride != nil,
               let route = settings.allLanguageRoutes.first(where: { $0.id == routeID }),
               var plan = languagePlan else { return }
         if textLanguageOverride != nil {
             for index in plan.sentences.indices {
                 plan.sentences[index].route = route
-                plan.sentences[index].needsReview = false
             }
-            manualRouteNeeded = false
             startReading(text: selectedText, plan: plan)
             return
         }
-
-        guard let index = plan.sentences.firstIndex(where: \.needsReview) else { return }
-        plan.sentences[index].route = route
-        plan.sentences[index].needsReview = false
-        languagePlan = plan
-        if plan.needsLanguageCheck {
-            return
-        }
-        manualRouteNeeded = false
-        startReading(text: selectedText, plan: plan)
     }
 
     private func startAutoPlan(text: String, plan: LanguageFlow.Plan) {
-        guard plan.needsLanguageCheck else {
-            manualRouteNeeded = false
-            startReading(text: text, plan: plan)
-            return
-        }
-        activeSpeech?.stop()
-        selectedText = text
-        languagePlan = plan
-        manualRouteNeeded = true
-        state = .awaitingRoute
-        onPopupVisibilityChanged?(true)
+        startReading(text: text, plan: plan)
     }
 
     private func startReading(text: String, plan: LanguageFlow.Plan) {
         guard let speech = selectedSpeechEngine() else { return }
         activeSpeech?.stop()
-        manualRouteNeeded = false
         activeSpeech = speech
         selectedText = settings.wordHighlightingEnabled
             ? LanguageFlow.playbackText(for: plan, sourceText: text)

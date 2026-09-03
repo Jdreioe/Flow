@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const MAXIMUM_SELECTION_CHARACTERS: usize = 45_000;
-pub const DEFAULT_LANGUAGE_ROUTE_ID: Uuid = Uuid::from_u128(1);
+pub const FALLBACK_ROUTE_ID: Uuid = Uuid::from_u128(1);
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,14 +20,6 @@ pub enum SameSelectionAction {
     #[default]
     PauseResume,
     Restart,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AzureVoiceMode {
-    #[default]
-    Multilingual,
-    PerLanguage,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -117,14 +109,12 @@ pub struct Settings {
     pub word_highlighting_enabled: bool,
     pub azure_voice_name: String,
     pub azure_speech_rate: f64,
-    pub azure_voice_mode: AzureVoiceMode,
     pub google_voice_name: Option<String>,
     pub google_speech_rate: f64,
     pub google_api_key_configured: bool,
     pub piper_voice_name: Option<String>,
     pub playback_speed: f64,
     pub default_language_tag: String,
-    pub language_switching_enabled: bool,
     pub language_routes: Vec<LanguageRoute>,
     pub azure_endpoint: Option<String>,
 }
@@ -141,14 +131,12 @@ impl Default for Settings {
             word_highlighting_enabled: false,
             azure_voice_name: "en-US-AvaMultilingualNeural".into(),
             azure_speech_rate: 0.0,
-            azure_voice_mode: AzureVoiceMode::Multilingual,
             google_voice_name: None,
             google_speech_rate: 0.0,
             google_api_key_configured: false,
             piper_voice_name: None,
             playback_speed: 1.0,
             default_language_tag: "en-US".into(),
-            language_switching_enabled: true,
             language_routes: Vec::new(),
             azure_endpoint: None,
         }
@@ -156,9 +144,9 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub fn default_language_route(&self) -> LanguageRoute {
+    pub fn fallback_route(&self) -> LanguageRoute {
         LanguageRoute {
-            id: DEFAULT_LANGUAGE_ROUTE_ID,
+            id: FALLBACK_ROUTE_ID,
             language_tag: self.default_language_tag.clone(),
             system_voice_name: self.system_voice_name.clone(),
             system_speech_rate: self.system_speech_rate,
@@ -172,17 +160,20 @@ impl Settings {
     }
 
     pub fn all_language_routes(&self) -> Vec<LanguageRoute> {
-        std::iter::once(self.default_language_route())
+        std::iter::once(self.fallback_route())
             .chain(self.language_routes.iter().cloned())
             .collect()
     }
 
     pub fn language_route(&self, detected_tag: &str) -> Option<LanguageRoute> {
         let detected_base = language_base(detected_tag);
-        self.all_language_routes().into_iter().find(|route| {
-            route.language_tag.eq_ignore_ascii_case(detected_tag)
-                || language_base(&route.language_tag) == detected_base
-        })
+        self.language_routes
+            .iter()
+            .find(|route| {
+                route.language_tag.eq_ignore_ascii_case(detected_tag)
+                    || language_base(&route.language_tag) == detected_base
+            })
+            .cloned()
     }
 }
 
@@ -198,7 +189,7 @@ mod tests {
     fn route_lookup_accepts_regional_variants() {
         let settings = Settings {
             default_language_tag: "en-US".into(),
-            language_routes: vec![LanguageRoute::new("da-DK")],
+            language_routes: vec![LanguageRoute::new("en-US"), LanguageRoute::new("da-DK")],
             ..Settings::default()
         };
 

@@ -127,12 +127,11 @@ explains key restrictions and rotation.
 - Reads with selectable system voices through `AVSpeechSynthesizer`, or opt-in
   Azure and Google Cloud voices through their REST APIs.
 - Includes **Language Flow**: add a language and voice in Settings, and Flow
-  detects each sentence locally before choosing the configured system voice.
-  It asks before playback when detection is uncertain or a detected language is
-  not enabled.
-- Azure multilingual mode retains one Azure voice and sends a language tag for
-  each sentence. Azure per-language mode uses the configured voice and rate for
-  each language route.
+  detects each sentence locally before choosing a configured route. Languages
+  without a route use the fallback voice immediately and can be corrected from
+  the playback popup.
+- Azure uses the fallback voice for languages without a route and the configured
+  voice and rate for each explicit language route.
 - Google Cloud mode uses the configured voice and rate for each language route,
   falling back to Google's default voice when no named voice is selected.
 - Keeps captured text in memory only while the popup is visible.

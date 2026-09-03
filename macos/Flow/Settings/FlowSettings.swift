@@ -100,14 +100,9 @@ struct FlowSettings: Codable, Equatable {
         }
     }
 
-    enum AzureVoiceMode: String, Codable, CaseIterable, Identifiable {
+    private enum LegacyAzureVoiceMode: String, Decodable {
         case multilingual
         case perLanguage
-
-        var id: String { rawValue }
-        var title: String {
-            L10n.string(self == .multilingual ? "One multilingual voice" : "A voice per language")
-        }
     }
 
     var speechSource: SpeechSource = .system
@@ -119,22 +114,24 @@ struct FlowSettings: Codable, Equatable {
     var wordHighlightingEnabled = false
     var azureVoiceName = "en-US-AvaMultilingualNeural"
     var azureSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
-    var azureVoiceMode: AzureVoiceMode = .multilingual
     var googleVoiceName: String?
     var googleSpeechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var playbackSpeed: Float = 1
     var defaultLanguageTag = "en-US"
-    var languageSwitchingEnabled = true
     var languageRoutes: [LanguageRoute] = []
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
         case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction, wordHighlightingEnabled
-        case azureVoiceName, azureSpeechRate, azureVoiceMode
+        case azureVoiceName, azureSpeechRate
         case googleVoiceName, googleSpeechRate
         case playbackSpeed
-        case defaultLanguageTag, languageSwitchingEnabled, languageRoutes
+        case defaultLanguageTag, languageRoutes
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case azureVoiceMode
     }
 
     init(from decoder: Decoder) throws {
@@ -150,16 +147,27 @@ struct FlowSettings: Codable, Equatable {
         wordHighlightingEnabled = try values.decodeIfPresent(Bool.self, forKey: .wordHighlightingEnabled) ?? false
         azureVoiceName = try values.decodeIfPresent(String.self, forKey: .azureVoiceName) ?? "en-US-AvaMultilingualNeural"
         azureSpeechRate = try values.decodeIfPresent(Float.self, forKey: .azureSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
-        azureVoiceMode = try values.decodeIfPresent(AzureVoiceMode.self, forKey: .azureVoiceMode) ?? .multilingual
         googleVoiceName = try values.decodeIfPresent(String.self, forKey: .googleVoiceName)
         googleSpeechRate = try values.decodeIfPresent(Float.self, forKey: .googleSpeechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         playbackSpeed = min(max(try values.decodeIfPresent(Float.self, forKey: .playbackSpeed) ?? 1, 0.5), 4)
         defaultLanguageTag = try values.decodeIfPresent(String.self, forKey: .defaultLanguageTag) ?? "en-US"
-        languageSwitchingEnabled = try values.decodeIfPresent(Bool.self, forKey: .languageSwitchingEnabled) ?? true
         languageRoutes = try values.decodeIfPresent([LanguageRoute].self, forKey: .languageRoutes) ?? []
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if try legacy.decodeIfPresent(LegacyAzureVoiceMode.self, forKey: .azureVoiceMode) == .perLanguage,
+           !languageRoutes.contains(where: { $0.languageTag == defaultLanguageTag }) {
+            languageRoutes.insert(LanguageRoute(
+                languageTag: defaultLanguageTag,
+                systemVoiceIdentifier: voiceIdentifier,
+                systemSpeechRate: speechRate,
+                azureVoiceName: azureVoiceName,
+                azureSpeechRate: azureSpeechRate,
+                googleVoiceName: googleVoiceName,
+                googleSpeechRate: googleSpeechRate
+            ), at: 0)
+        }
     }
 
-    var defaultLanguageRoute: LanguageRoute {
+    var fallbackRoute: LanguageRoute {
         LanguageRoute(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
             languageTag: defaultLanguageTag,
@@ -172,11 +180,11 @@ struct FlowSettings: Codable, Equatable {
         )
     }
 
-    var allLanguageRoutes: [LanguageRoute] { [defaultLanguageRoute] + languageRoutes }
+    var allLanguageRoutes: [LanguageRoute] { [fallbackRoute] + languageRoutes }
 
     func languageRoute(for detectedTag: String) -> LanguageRoute? {
         let base = detectedTag.split(separator: "-").first?.lowercased()
-        return allLanguageRoutes.first { route in
+        return languageRoutes.first { route in
             route.languageTag.lowercased() == detectedTag.lowercased() ||
                 route.languageTag.split(separator: "-").first?.lowercased() == base
         }

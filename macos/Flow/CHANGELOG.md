@@ -1,5 +1,14 @@
 # Flow changelog
 
+## 0.8.0
+
+Language Flow starts reading immediately and is easier to correct when it chooses the wrong voice.
+
+- Read unconfigured languages with the fallback voice instead of waiting for confirmation.
+- Add a suggested voice route with one click when the current language sounds wrong.
+- Change language routing from the playback popup while reading or paused.
+- Replace Azure voice modes and the language-switching toggle with one fallback voice and explicit language routes.
+
 ## 0.7.1
 
 Voice selection stays readable and playback stays responsive.

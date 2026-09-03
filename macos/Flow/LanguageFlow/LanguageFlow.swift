@@ -7,21 +7,18 @@ enum LanguageFlow {
         let text: String
         let detectedLanguageTag: String?
         var route: FlowSettings.LanguageRoute
-        var needsReview: Bool
         var detectedButUnconfigured: Bool
     }
 
     struct Plan {
         var sentences: [Sentence]
-        var needsLanguageCheck: Bool { sentences.contains(where: \.needsReview) }
     }
 
     static func singleSentence(_ text: String, settings: FlowSettings) -> Plan {
         Plan(sentences: [Sentence(
             text: text,
             detectedLanguageTag: settings.defaultLanguageTag,
-            route: settings.defaultLanguageRoute,
-            needsReview: false,
+            route: settings.fallbackRoute,
             detectedButUnconfigured: false,
         )])
     }
@@ -146,8 +143,7 @@ enum LanguageFlow {
             sentences.append(Sentence(
                 text: sentence,
                 detectedLanguageTag: tag,
-                route: settings.languageRoute(for: tag) ?? settings.defaultLanguageRoute,
-                needsReview: false,
+                route: settings.languageRoute(for: tag) ?? settings.fallbackRoute,
                 detectedButUnconfigured: false,
             ))
             return true
@@ -158,7 +154,6 @@ enum LanguageFlow {
                 text: fallback.text,
                 detectedLanguageTag: tag,
                 route: fallback.route,
-                needsReview: false,
                 detectedButUnconfigured: false,
             )])
         }
@@ -176,28 +171,15 @@ enum LanguageFlow {
             let detection = detect(sentence, settings: settings)
             let route = detection.route
             let configured = route != nil
-            let shouldCheck = !configured
             sentences.append(Sentence(
                 text: sentence,
                 detectedLanguageTag: detection.tag,
-                route: route ?? settings.defaultLanguageRoute,
-                needsReview: shouldCheck,
+                route: route ?? settings.fallbackRoute,
                 detectedButUnconfigured: detection.tag != nil && !configured,
             ))
             return true
         }
         return Plan(sentences: sentences.isEmpty ? singleSentence(text, settings: settings).sentences : sentences)
-    }
-
-    // Copy of the plan with every review flag cleared, for paths that must
-    // never block playback (see ADR 0003).
-    static func withoutReview(_ plan: Plan) -> Plan {
-        var plan = plan
-        for index in plan.sentences.indices {
-            plan.sentences[index].needsReview = false
-            plan.sentences[index].detectedButUnconfigured = false
-        }
-        return plan
     }
 
     private static func detect(

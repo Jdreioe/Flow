@@ -55,7 +55,7 @@ struct FlowSettingsView: View {
                 }
                 LanguageRouteEditor(
                     route: Binding(
-                        get: { model.settings.defaultLanguageRoute },
+                        get: { model.settings.fallbackRoute },
                         set: { route in
                             model.settings.voiceIdentifier = route.systemVoiceIdentifier
                             model.settings.speechRate = route.systemSpeechRate
@@ -93,8 +93,7 @@ struct FlowSettingsView: View {
                 HStack {
                     Picker("Language", selection: $languageToAdd) {
                         ForEach(SupportedLanguage.all.filter { option in
-                            option.tag != model.settings.defaultLanguageTag &&
-                                !model.settings.languageRoutes.contains(where: { $0.languageTag == option.tag })
+                            !model.settings.languageRoutes.contains(where: { $0.languageTag == option.tag })
                         }) { language in
                             Text(language.title).tag(language.tag)
                         }
@@ -140,16 +139,7 @@ struct FlowSettingsView: View {
     }
 
     private func addLanguage(_ languageTag: String) {
-        let azureVoice = model.azureVoices.first { $0.supports(languageTag: languageTag) }?.shortName
-        let googleVoice = model.googleVoices.first { $0.supports(languageTag: languageTag) }?.name
-        model.settings.languageRoutes.append(.init(
-            languageTag: languageTag,
-            systemVoiceIdentifier: SystemSpeechEngine.defaultVoice(for: languageTag)?.identifier,
-            azureVoiceName: azureVoice ?? model.settings.azureVoiceName,
-            azureSpeechRate: model.settings.azureSpeechRate,
-            googleVoiceName: googleVoice,
-            googleSpeechRate: model.settings.googleSpeechRate,
-        ))
+        model.addLanguageRoute(languageTag)
     }
 }
 

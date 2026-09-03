@@ -1,5 +1,14 @@
 # Ændringer i Flow
 
+## 0.8.0
+
+Language Flow begynder oplæsningen med det samme og er lettere at rette, når den vælger en forkert stemme.
+
+- Læs sprog uden en konfigureret rute med reservestemmen i stedet for at vente på bekræftelse.
+- Tilføj en foreslået stemmerute med ét klik, når det aktuelle sprog lyder forkert.
+- Skift sprogrute i oplæsningsvinduet under oplæsning eller pause.
+- Erstat Azure-stemmetilstande og kontakten til sprogskift med én reservestemme og eksplicitte sprogruter.
+
 ## 0.7.1
 
 Stemmevalg er lettere at læse, og oplæsningen reagerer hurtigere.

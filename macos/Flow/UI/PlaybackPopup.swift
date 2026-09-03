@@ -83,13 +83,7 @@ struct PlaybackPopupView: View {
                     .keyboardShortcut(.escape, modifiers: [])
                     .accessibilityLabel("Stop reading")
             }
-            if (model.textLanguageOverride != nil && model.overrideNeedsRoute) || model.manualRouteNeeded {
-                if model.manualRouteNeeded, let sentence = model.manualRouteSentenceText {
-                    Text(sentence)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                        .accessibilityLabel("Sentence requiring a voice choice")
-                }
+            if model.textLanguageOverride != nil && model.overrideNeedsRoute {
                 Picker("Read as", selection: Binding<UUID?>(
                     get: { nil },
                     set: { if let routeID = $0 { model.applyOverrideRoute(routeID) } },
@@ -99,9 +93,7 @@ struct PlaybackPopupView: View {
                         Text(route.displayName).tag(route.id as UUID?)
                     }
                 }
-                .accessibilityLabel(model.manualRouteNeeded
-                    ? L10n.string("Read this sentence as")
-                    : L10n.string("Read the overridden language as"))
+                .accessibilityLabel(L10n.string("Read the overridden language as"))
             }
             if case let .message(message) = model.state {
                 Text(message)
@@ -112,6 +104,20 @@ struct PlaybackPopupView: View {
                     .textSelection(.enabled)
                     .accessibilityLabel("Selected text being read")
             }
+            if let languageTag = model.missingRouteLanguage,
+               model.state == .playing || model.state == .paused {
+                Button(L10n.format(
+                    "Reading %@ with %@ voice — tap to fix",
+                    languageName(languageTag),
+                    languageName(model.settings.defaultLanguageTag)
+                )) {
+                    model.fixMissingRoute(languageTag)
+                }
+                .accessibilityLabel(L10n.format(
+                    "Add a voice route for %@",
+                    languageName(languageTag)
+                ))
+            }
             if showsLanguages, !model.detectedLanguages.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(model.detectedLanguages, id: \.self) { tag in
@@ -120,9 +126,7 @@ struct PlaybackPopupView: View {
                 }
             }
             if showsAwaitingRouteNotice {
-                Text(L10n.string(model.manualRouteNeeded
-                    ? "Choose how Flow should read this sentence before playback starts."
-                    : "Choose how Flow should read this selection before playback starts."))
+                Text(L10n.string("Choose how Flow should read this selection before playback starts."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -185,7 +189,7 @@ struct PlaybackPopupView: View {
     }
 
     private var showsAwaitingRouteNotice: Bool {
-        model.state == .awaitingRoute && (model.overrideNeedsRoute || model.manualRouteNeeded)
+        model.state == .awaitingRoute && model.overrideNeedsRoute
     }
 
     private var showsSpeedControl: Bool {

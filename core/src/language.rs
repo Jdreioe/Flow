@@ -14,7 +14,6 @@ pub struct Sentence {
     pub text: String,
     pub detected_language_tag: Option<String>,
     pub route: LanguageRoute,
-    pub needs_review: bool,
     pub detected_but_unconfigured: bool,
 }
 
@@ -24,36 +23,13 @@ pub struct Plan {
     pub sentences: Vec<Sentence>,
 }
 
-impl Plan {
-    pub fn needs_language_check(&self) -> bool {
-        self.sentences.iter().any(|sentence| sentence.needs_review)
-    }
-
-    /// Copy of the plan with every review flag cleared, for paths that must
-    /// never block playback (see ADR 0003).
-    pub fn without_review(&self) -> Plan {
-        Plan {
-            sentences: self
-                .sentences
-                .iter()
-                .map(|sentence| Sentence {
-                    needs_review: false,
-                    detected_but_unconfigured: false,
-                    ..sentence.clone()
-                })
-                .collect(),
-        }
-    }
-}
-
 pub fn single_sentence(text: &str, settings: &Settings) -> Plan {
     Plan {
         sentences: vec![Sentence {
             id: Uuid::new_v4(),
             text: text.into(),
             detected_language_tag: Some(settings.default_language_tag.clone()),
-            route: settings.default_language_route(),
-            needs_review: false,
+            route: settings.fallback_route(),
             detected_but_unconfigured: false,
         }],
     }
@@ -72,7 +48,7 @@ pub fn plan_with_override(text: &str, settings: &Settings, override_tag: Option<
     };
     let route = settings
         .language_route(tag)
-        .unwrap_or_else(|| settings.default_language_route());
+        .unwrap_or_else(|| settings.fallback_route());
     let mut sentences = Vec::new();
     for raw_sentence in text.split_sentence_bounds() {
         let sentence = raw_sentence.trim();
@@ -84,7 +60,6 @@ pub fn plan_with_override(text: &str, settings: &Settings, override_tag: Option<
             text: sentence.into(),
             detected_language_tag: Some(tag.to_owned()),
             route: route.clone(),
-            needs_review: false,
             detected_but_unconfigured: false,
         });
     }
@@ -95,7 +70,6 @@ pub fn plan_with_override(text: &str, settings: &Settings, override_tag: Option<
                 text: text.into(),
                 detected_language_tag: Some(tag.to_owned()),
                 route,
-                needs_review: false,
                 detected_but_unconfigured: false,
             }],
         }
@@ -105,9 +79,6 @@ pub fn plan_with_override(text: &str, settings: &Settings, override_tag: Option<
 }
 
 fn detected_plan(text: &str, settings: &Settings) -> Plan {
-    if !settings.language_switching_enabled {
-        return unswitched_plan(text, settings);
-    }
     let detector = detector();
     let mut sentences = Vec::new();
 
@@ -122,9 +93,7 @@ fn detected_plan(text: &str, settings: &Settings) -> Plan {
         // configured Scandinavian candidate, but never substitute an
         // unrelated configured language for the detector's leading result.
         let configured = confidence_values.iter().find_map(|(language, _)| {
-            let Some(detected_language) = detected_language else {
-                return None;
-            };
+            let detected_language = detected_language?;
             if !shares_automatic_language_group(detected_language, *language) {
                 return None;
             }
@@ -140,42 +109,15 @@ fn detected_plan(text: &str, settings: &Settings) -> Plan {
         });
         let route = configured.map(|(_, route)| route);
         let configured = route.is_some();
-        let needs_review = !configured;
         sentences.push(Sentence {
             id: Uuid::new_v4(),
             text: sentence.into(),
             detected_language_tag: detected_tag.clone(),
-            route: route.unwrap_or_else(|| settings.default_language_route()),
-            needs_review,
+            route: route.unwrap_or_else(|| settings.fallback_route()),
             detected_but_unconfigured: detected_tag.is_some() && !configured,
         });
     }
 
-    if sentences.is_empty() {
-        single_sentence(text, settings)
-    } else {
-        Plan { sentences }
-    }
-}
-
-/// Language Flow is switched off: every sentence reads with the default route
-/// and detection never blocks playback.
-fn unswitched_plan(text: &str, settings: &Settings) -> Plan {
-    let mut sentences = Vec::new();
-    for raw_sentence in text.split_sentence_bounds() {
-        let sentence = raw_sentence.trim();
-        if sentence.is_empty() {
-            continue;
-        }
-        sentences.push(Sentence {
-            id: Uuid::new_v4(),
-            text: sentence.into(),
-            detected_language_tag: None,
-            route: settings.default_language_route(),
-            needs_review: false,
-            detected_but_unconfigured: false,
-        });
-    }
     if sentences.is_empty() {
         single_sentence(text, settings)
     } else {
@@ -267,7 +209,6 @@ mod tests {
         assert_eq!(plan.sentences.len(), 2);
         assert_eq!(plan.sentences[0].route.language_tag, "en-US");
         assert_eq!(plan.sentences[1].route.language_tag, "da-DK");
-        assert!(!plan.needs_language_check());
     }
 
     #[test]
@@ -284,7 +225,6 @@ mod tests {
             Some("da-DK")
         );
         assert_eq!(plan.sentences[0].route.language_tag, "da-DK");
-        assert!(!plan.needs_language_check());
     }
 
     #[test]
@@ -300,32 +240,16 @@ mod tests {
             plan.sentences[0].detected_language_tag.as_deref(),
             Some("de-DE")
         );
-        assert!(plan.needs_language_check());
+        assert!(plan.sentences[0].detected_but_unconfigured);
     }
 
     #[test]
-    fn unconfigured_language_requires_review() {
+    fn unconfigured_language_uses_fallback_without_blocking() {
         let settings = Settings::default();
         let plan = plan("Denne sætning er skrevet på dansk.", &settings);
 
-        assert!(plan.needs_language_check());
         assert!(plan.sentences[0].detected_but_unconfigured);
         assert_eq!(plan.sentences[0].route.language_tag, "en-US");
-    }
-
-    #[test]
-    fn disabling_switching_uses_one_default_route() {
-        let settings = Settings {
-            language_switching_enabled: false,
-            ..Settings::default()
-        };
-        let plan = plan("Hello. Goddag.", &settings);
-
-        assert!(
-            plan.sentences
-                .iter()
-                .all(|sentence| sentence.route.language_tag == "en-US" && !sentence.needs_review)
-        );
     }
 
     #[test]
@@ -343,26 +267,11 @@ mod tests {
                 .iter()
                 .all(|sentence| sentence.route.language_tag == "da-DK"
                     && sentence.detected_language_tag.as_deref() == Some("da-DK")
-                    && !sentence.needs_review
                     && !sentence.detected_but_unconfigured)
         );
 
         let unrouted = plan_with_override("Hello.", &settings, Some("fr-FR"));
         assert_eq!(unrouted.sentences[0].route.language_tag, "en-US");
-        assert!(!unrouted.needs_language_check());
-    }
-
-    #[test]
-    fn without_review_clears_every_flag() {
-        let settings = Settings::default();
-        let plan =
-            plan_with_override("Denne sætning er på dansk.", &settings, None).without_review();
-
-        assert!(!plan.needs_language_check());
-        assert!(
-            plan.sentences
-                .iter()
-                .all(|sentence| !sentence.detected_but_unconfigured)
-        );
+        assert!(!unrouted.sentences[0].detected_but_unconfigured);
     }
 }

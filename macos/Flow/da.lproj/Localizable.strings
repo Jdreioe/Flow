@@ -135,3 +135,5 @@
 "Google Cloud could not synthesize this selection. Check the API key and voice." = "Google Cloud kunne ikke danne tale fra markeringen. Kontrollér API-nøglen og stemmen.";
 "Google Cloud returned audio that Flow could not play." = "Google Cloud returnerede lyd, som Flow ikke kunne afspille.";
 "Google Cloud playback ended unexpectedly." = "Afspilningen fra Google Cloud stoppede uventet.";
+"Reading %@ with %@ voice — tap to fix" = "Læser %@ med en %@ stemme — tryk for at rette";
+"Add a voice route for %@" = "Tilføj en stemmerute for %@";
