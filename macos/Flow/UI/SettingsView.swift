@@ -285,6 +285,10 @@ private struct LanguageRouteEditor: View {
         return voices.filter { $0.language.split(separator: "-").first?.lowercased() == base }
     }
 
+    private var voiceGroups: [(category: SystemSpeechEngine.Voice.Category, voices: [SystemSpeechEngine.Voice])] {
+        SystemSpeechEngine.groupedForPicker(matchingVoices)
+    }
+
     private var matchingAzureVoices: [AzureVoiceCatalog.Voice] {
         azureVoices.filter { $0.supports(languageTag: route.languageTag) }
     }
@@ -307,8 +311,18 @@ private struct LanguageRouteEditor: View {
             }
             if showSystemRoute {
                 Picker("Voice", selection: $route.systemVoiceIdentifier) {
-                    ForEach(matchingVoices) { voice in
-                        Text(voice.name).tag(String?.some(voice.id))
+                    if voiceGroups.count < 2 {
+                        ForEach(matchingVoices) { voice in
+                            Text(voice.name).tag(String?.some(voice.id))
+                        }
+                    } else {
+                        ForEach(voiceGroups, id: \.category) { group in
+                            Section(group.category.title) {
+                                ForEach(group.voices) { voice in
+                                    Text(voice.name).tag(String?.some(voice.id))
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -2,9 +2,37 @@ import AVFoundation
 
 final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeechEngine {
     struct Voice: Identifiable, Hashable {
+        enum Category: CaseIterable, Identifiable {
+            case premium
+            case enhanced
+            case standard
+            case novelty
+
+            var id: Self { self }
+
+            var title: String {
+                switch self {
+                case .premium: "Premium"
+                case .enhanced: "Enhanced"
+                case .standard: "Standard"
+                case .novelty: "Novelty"
+                }
+            }
+
+            init(quality: AVSpeechSynthesisVoiceQuality) {
+                switch quality {
+                case .premium: self = .premium
+                case .enhanced: self = .enhanced
+                case .default: self = .standard
+                @unknown default: self = .standard
+                }
+            }
+        }
+
         let id: String
         let name: String
         let language: String
+        let category: Category
     }
 
     var onFinished: (() -> Void)?
@@ -27,6 +55,14 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
 
     static var voices: [Voice] { cachedVoices }
 
+    /// Orders voices into quality tiers with novelty voices last, dropping empty groups.
+    static func groupedForPicker(_ voices: [Voice]) -> [(category: Voice.Category, voices: [Voice])] {
+        Voice.Category.allCases.compactMap { category in
+            let members = voices.filter { $0.category == category }
+            return members.isEmpty ? nil : (category, members)
+        }
+    }
+
     private static var cachedVoices: [Voice] = buildVoiceList()
 
     // Enumerating speechVoices() formats a localized name per voice and is
@@ -40,7 +76,10 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
             .filter(isListable)
             .map { voice in
                 let localeName = Locale.current.localizedString(forIdentifier: voice.language) ?? voice.language
-                return Voice(id: voice.identifier, name: "\(voice.name) — \(localeName)", language: voice.language)
+                let category: Voice.Category = voice.voiceTraits.contains(.isNoveltyVoice)
+                    ? .novelty
+                    : Voice.Category(quality: voice.quality)
+                return Voice(id: voice.identifier, name: "\(voice.name) — \(localeName)", language: voice.language, category: category)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -48,6 +87,7 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     private static func isListable(_ voice: AVSpeechSynthesisVoice) -> Bool {
         !voice.identifier.contains(".siri.")
             && !voice.identifier.contains("<+>")
+            && !voice.voiceTraits.contains(.isPersonalVoice)
     }
 
     static func defaultVoice(for languageTag: String) -> AVSpeechSynthesisVoice? {
