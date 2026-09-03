@@ -57,6 +57,7 @@ enum AzureVoiceCatalog {
 final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine {
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
+    var onPlaybackStarted: (() -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
     private var player: AVAudioPlayer?
     private var synthesisGlobalSpeed: Float = 1
@@ -66,7 +67,7 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
         stop()
         synthesisGlobalSpeed = min(max(settings.playbackSpeed, 0.5), 4)
         guard let credentials = AzureCredentialsStore.load() else {
-            onFailure?("Set up Azure Speech before choosing Azure voice.")
+            onFailure?(L10n.string("Set up Azure Speech before choosing Azure voice."))
             return
         }
         synthesisTask = Task { [weak self] in
@@ -76,7 +77,9 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
                 await MainActor.run { self?.play(audio) }
             } catch is CancellationError {
             } catch {
-                await MainActor.run { self?.onFailure?("Azure could not synthesize this selection. Check the endpoint, key, and voice.") }
+                await MainActor.run {
+                    self?.onFailure?(L10n.string("Azure could not synthesize this selection. Check the endpoint, key, and voice."))
+                }
             }
         }
     }
@@ -104,8 +107,9 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
             player.delegate = self
             self.player = player
             guard player.play() else { throw CocoaError(.fileReadCorruptFile) }
+            onPlaybackStarted?()
         } catch {
-            onFailure?("Azure returned audio that Flow could not play.")
+            onFailure?(L10n.string("Azure returned audio that Flow could not play."))
         }
     }
 
@@ -150,6 +154,10 @@ final class AzureSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngine
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        if flag { onFinished?() } else { onFailure?("Azure playback ended unexpectedly.") }
+        if flag {
+            onFinished?()
+        } else {
+            onFailure?(L10n.string("Azure playback ended unexpectedly."))
+        }
     }
 }

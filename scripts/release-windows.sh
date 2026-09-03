@@ -1,12 +1,12 @@
-#!/bin/sh
-# Dispatch the Windows release candidate workflow and wait for it to publish.
+#!/bin/bash
+# Dispatch the shared macOS, Linux, and Windows release workflow and wait for it.
 # Usage: scripts/release-windows.sh [version]
 #   version is required, e.g. 0.2 or 0.2.0
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="jdreioe/Flow"
-WORKFLOW="release-windows.yml"
+WORKFLOW="release.yml"
 
 command -v gh >/dev/null || { echo "error: gh (GitHub CLI) not found" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "error: not authenticated with gh. Run: gh auth login" >&2; exit 1; }
@@ -37,7 +37,7 @@ case "$REF" in
     ""|HEAD) REF="main" ;;
 esac
 
-echo "Dispatching $WORKFLOW on $REF for $TAG"
+echo "Dispatching the shared release workflow on $REF for $TAG"
 gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$REF" -f version="$VERSION"
 
 sleep 5

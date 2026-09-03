@@ -22,6 +22,7 @@ final class PlaybackPopupController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
         panel.contentView = NSHostingView(rootView: PlaybackPopupView(model: model, progress: model.progress))
     }
 
@@ -51,6 +52,11 @@ struct PlaybackPopupView: View {
             HStack {
                 Text(title)
                     .font(.headline)
+                if model.state == .preparing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Preparing playback")
+                }
                 Spacer()
                 if showsLanguageOverride {
                     Picker("Read in", selection: Binding(
@@ -67,7 +73,7 @@ struct PlaybackPopupView: View {
                     .accessibilityLabel("Language override")
                 }
                 if showsLanguageButton {
-                    Button(showsLanguages ? "Hide languages" : "Language…") {
+                    Button(L10n.string(showsLanguages ? "Hide languages" : "Language…")) {
                         showsLanguages.toggle()
                     }
                     .buttonStyle(.borderless)
@@ -94,8 +100,8 @@ struct PlaybackPopupView: View {
                     }
                 }
                 .accessibilityLabel(model.manualRouteNeeded
-                    ? "Read this sentence as"
-                    : "Read the overridden language as")
+                    ? L10n.string("Read this sentence as")
+                    : L10n.string("Read the overridden language as"))
             }
             if case let .message(message) = model.state {
                 Text(message)
@@ -114,9 +120,9 @@ struct PlaybackPopupView: View {
                 }
             }
             if showsAwaitingRouteNotice {
-                Text(model.manualRouteNeeded
+                Text(L10n.string(model.manualRouteNeeded
                     ? "Choose how Flow should read this sentence before playback starts."
-                    : "Choose how Flow should read this selection before playback starts.")
+                    : "Choose how Flow should read this selection before playback starts."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -149,16 +155,16 @@ struct PlaybackPopupView: View {
                         model.setPlaybackSpeed(Float(pendingSpeed))
                     }
                     .accessibilityLabel("Playback speed")
-                    .accessibilityValue("\(speedLabel) times normal speed")
+                    .accessibilityValue(L10n.format("%@ times normal speed", speedLabel))
                     Text(speedLabel)
                         .font(.callout.monospacedDigit())
                         .frame(minWidth: 40, alignment: .trailing)
                 }
             }
             if model.state == .playing || model.state == .paused {
-                Button(model.state == .paused ? "Resume" : "Pause", action: model.pauseOrResume)
+                Button(L10n.string(model.state == .paused ? "Resume" : "Pause"), action: model.pauseOrResume)
                     .buttonStyle(.borderedProminent)
-                    .accessibilityLabel(model.state == .paused ? "Resume reading" : "Pause reading")
+                    .accessibilityLabel(L10n.string(model.state == .paused ? "Resume reading" : "Pause reading"))
             }
         }
         .padding(20)
@@ -199,11 +205,11 @@ struct PlaybackPopupView: View {
 
     private var title: String {
         switch model.state {
-        case .preparing: "Preparing playback"
-        case .playing: "Reading"
-        case .paused: "Paused"
-        case .awaitingRoute: "Choose a voice"
-        case .finished: "Finished"
+        case .preparing: L10n.string("Preparing playback")
+        case .playing: L10n.string("Reading")
+        case .paused: L10n.string("Paused")
+        case .awaitingRoute: L10n.string("Choose a voice")
+        case .finished: L10n.string("Finished")
         case .message: "Flow"
         case .hidden: "Flow"
         }
@@ -263,7 +269,7 @@ private struct LanguageRouteRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 220)
-            .accessibilityLabel("Read all \(languageTag) sentences as")
+            .accessibilityLabel(L10n.format("Read all %@ sentences as", languageTag))
         }
     }
 

@@ -26,10 +26,10 @@ enum AzureConfigurationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidEndpoint: "Enter an Azure Speech region or HTTPS endpoint."
-        case .invalidKey: "Enter a valid Azure Speech subscription key."
-        case .invalidVoice: "Enter a valid Azure neural voice name."
-        case .keychain: "Flow could not save the Azure credential in your Keychain."
+        case .invalidEndpoint: L10n.string("Enter an Azure Speech region or HTTPS endpoint.")
+        case .invalidKey: L10n.string("Enter a valid Azure Speech subscription key.")
+        case .invalidVoice: L10n.string("Enter a valid Azure neural voice name.")
+        case .keychain: L10n.string("Flow could not save the Azure credential in your Keychain.")
         }
     }
 }

@@ -42,6 +42,13 @@ cargo run -p flow-windows
 
 See [`windows/README.md`](windows/README.md) for toolchain and Qt setup.
 
+## Releases
+
+Run the `Release Flow` GitHub Action with a `major.minor.patch` version. It
+builds macOS, Linux, and Windows in parallel and creates one GitHub Release
+after all three packages succeed. The required macOS signing secrets are
+documented in [`macos/README.md`](macos/README.md#github-release-workflow).
+
 ## License
 
 Flow is licensed under GPL-3.0-only.

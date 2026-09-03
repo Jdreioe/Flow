@@ -52,7 +52,7 @@ enum GoogleVoiceCatalog {
                 case .standard: "Standard"
                 case .extended: "Extended"
                 case .chirpHD: "Chirp HD"
-                case .other: "Other"
+                case .other: L10n.string("Other")
                 }
             }
         }
@@ -112,6 +112,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
 
     var onFinished: (() -> Void)?
     var onFailure: ((String) -> Void)?
+    var onPlaybackStarted: (() -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
     var onReadingOffset: ((Double?) -> Void)?
     private var player: AVAudioPlayer?
@@ -129,7 +130,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         stop()
         speedMultiplier = min(max(settings.playbackSpeed, 0.5), 4)
         guard let apiKey = GoogleCredentialsStore.load() else {
-            onFailure?("Set up Google Cloud Text-to-Speech before choosing Google voice.")
+            onFailure?(L10n.string("Set up Google Cloud Text-to-Speech before choosing Google voice."))
             return
         }
         synthesisTask = Task { [weak self] in
@@ -140,7 +141,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             } catch is CancellationError {
             } catch {
                 await MainActor.run {
-                    self?.onFailure?("Google Cloud could not synthesize this selection. Check the API key and voice.")
+                    self?.onFailure?(L10n.string("Google Cloud could not synthesize this selection. Check the API key and voice."))
                 }
             }
         }
@@ -182,7 +183,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
         for segment in audio {
             guard let probe = try? AVAudioPlayer(data: segment.data),
                   probe.duration.isFinite, probe.duration > 0 else {
-                onFailure?("Google Cloud returned audio that Flow could not play.")
+                onFailure?(L10n.string("Google Cloud returned audio that Flow could not play."))
                 return
             }
             measured.append(.init(audio: segment, duration: probe.duration))
@@ -213,10 +214,13 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             activeReadingOffset = nil
             restartTimer()
             guard !autoplay || player.play() else { throw CocoaError(.fileReadCorruptFile) }
+            if autoplay {
+                onPlaybackStarted?()
+            }
             updateWordHighlight()
         } catch {
             stop()
-            onFailure?("Google Cloud returned audio that Flow could not play.")
+            onFailure?(L10n.string("Google Cloud returned audio that Flow could not play."))
         }
     }
 
@@ -431,7 +435,7 @@ final class GoogleSpeechEngine: NSObject, AVAudioPlayerDelegate, FlowSpeechEngin
             playSegment(at: currentIndex + 1)
         } else {
             stop()
-            onFailure?("Google Cloud playback ended unexpectedly.")
+            onFailure?(L10n.string("Google Cloud playback ended unexpectedly."))
         }
     }
 }

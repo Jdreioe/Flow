@@ -29,11 +29,8 @@ pub struct Callbacks<A, S> {
 
 /// Registers the preset's global shortcut and pumps a Win32 message loop until
 /// the preset changes or the service stops.
-pub fn run<A, S>(
-    mut preset: HotKeyPreset,
-    receiver: Receiver<Command>,
-    callbacks: Callbacks<A, S>,
-) where
+pub fn run<A, S>(mut preset: HotKeyPreset, receiver: Receiver<Command>, callbacks: Callbacks<A, S>)
+where
     A: Fn(()) + Send + Sync + 'static,
     S: Fn(String) + Send + Sync + 'static,
 {

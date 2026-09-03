@@ -7,10 +7,13 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="jdreioe/Flow"
 BUILD_DIR="${TMPDIR:-/tmp}/flow-release-build"
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+BUILD_ONLY="${FLOW_RELEASE_BUILD_ONLY:-0}"
 
 command -v cargo >/dev/null || { echo "error: cargo not found" >&2; exit 1; }
-command -v gh >/dev/null || { echo "error: gh (GitHub CLI) not found" >&2; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "error: not authenticated with gh. Run: gh auth login" >&2; exit 1; }
+if [ "$BUILD_ONLY" != "1" ]; then
+    command -v gh >/dev/null || { echo "error: gh (GitHub CLI) not found" >&2; exit 1; }
+    gh auth status >/dev/null 2>&1 || { echo "error: not authenticated with gh. Run: gh auth login" >&2; exit 1; }
+fi
 
 VERSION="${1:-}"
 [ -n "$VERSION" ] || { echo "error: pass a version: $0 1.2.0" >&2; exit 1; }
@@ -25,8 +28,8 @@ case "$VERSION" in
 esac
 TAG="v$VERSION"
 
-if git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
-    || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+if [ "$BUILD_ONLY" != "1" ] && { git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
+    || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; }; then
     echo "error: $TAG already exists" >&2
     exit 1
 fi
@@ -92,10 +95,13 @@ Download the AppImage, make it executable (\`chmod +x\`), and run it. Installed
 builds update themselves from the tray menu (Check for Updates).
 EOF
 
-gh release create "$TAG" \
-    --repo "$REPO" \
-    --title "Flow $TAG (Linux)" \
-    --notes-file "$NOTES_FILE" \
-    "$ARTIFACT"
-
-echo "Published $TAG: https://github.com/$REPO/releases/tag/$TAG"
+if [ "$BUILD_ONLY" = "1" ]; then
+    echo "Package ready for the shared release: $ARTIFACT"
+else
+    gh release create "$TAG" \
+        --repo "$REPO" \
+        --title "Flow $TAG (Linux)" \
+        --notes-file "$NOTES_FILE" \
+        "$ARTIFACT"
+    echo "Published $TAG: https://github.com/$REPO/releases/tag/$TAG"
+fi

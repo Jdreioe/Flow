@@ -11,4 +11,9 @@ final class UpdateManager {
     func checkForUpdates() {
         controller.checkForUpdates(nil)
     }
+
+    func checkForUpdatesAtLaunch() {
+        guard controller.updater.automaticallyChecksForUpdates else { return }
+        controller.updater.checkForUpdatesInBackground()
+    }
 }

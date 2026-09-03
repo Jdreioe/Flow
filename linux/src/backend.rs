@@ -45,6 +45,12 @@ enum PlaybackState {
     Message,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UpdateCheckKind {
+    Startup,
+    Manual,
+}
+
 impl PlaybackState {
     const fn id(self) -> &'static str {
         match self {
@@ -439,7 +445,7 @@ pub struct FlowBackend {
     ),
     check_for_updates: qt_method!(
         fn check_for_updates(&mut self) {
-            self.start_update_check();
+            self.start_update_check(UpdateCheckKind::Manual);
         }
     ),
     restart_to_update: qt_method!(
@@ -714,6 +720,8 @@ impl FlowBackend {
         if self.settings.speech_source == SpeechSource::Piper {
             self.load_piper_catalog();
         }
+
+        self.start_update_check(UpdateCheckKind::Startup);
     }
 
     fn request_selection(&mut self) {
@@ -1572,7 +1580,7 @@ impl FlowBackend {
         std::thread::spawn(move || deliver(piper::download_voice(&key)));
     }
 
-    fn start_update_check(&mut self) {
+    fn start_update_check(&mut self, kind: UpdateCheckKind) {
         let pointer = QPointer::from(&*self);
         let deliver = queued_callback(move |result: Result<crate::updates::Outcome, String>| {
             if let Some(backend) = pointer.as_pinned() {
@@ -1583,11 +1591,14 @@ impl FlowBackend {
                 }
                 // Never interrupt active reading for an update check.
                 let message = match result {
-                    Ok(crate::updates::Outcome::UpToDate) => "Flow is up to date.".to_owned(),
+                    Ok(crate::updates::Outcome::UpToDate) if kind == UpdateCheckKind::Manual => {
+                        "Flow is up to date.".to_owned()
+                    }
                     Ok(crate::updates::Outcome::Staged(version)) => {
                         format!("Flow {version} is downloaded. Restart Flow to finish updating.")
                     }
-                    Err(message) => message,
+                    Err(message) if kind == UpdateCheckKind::Manual => message,
+                    Ok(crate::updates::Outcome::UpToDate) | Err(_) => return,
                 };
                 if backend.playback_state == PlaybackState::Hidden {
                     backend.show_message(message);

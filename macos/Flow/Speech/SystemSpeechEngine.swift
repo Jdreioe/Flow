@@ -12,10 +12,10 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
 
             var title: String {
                 switch self {
-                case .premium: "Premium"
-                case .enhanced: "Enhanced"
-                case .standard: "Standard"
-                case .novelty: "Novelty"
+                case .premium: L10n.string("Premium")
+                case .enhanced: L10n.string("Enhanced")
+                case .standard: L10n.string("Standard")
+                case .novelty: L10n.string("Novelty")
                 }
             }
 
@@ -36,6 +36,7 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
     }
 
     var onFinished: (() -> Void)?
+    var onPlaybackStarted: (() -> Void)?
     var onWordRange: ((Range<Int>?) -> Void)?
     private let synthesizer = AVSpeechSynthesizer()
     private var queuedUtterances = 0
@@ -172,6 +173,13 @@ final class SystemSpeechEngine: NSObject, AVSpeechSynthesizerDelegate, FlowSpeec
         speedMultiplier = 1
         isPaused = false
         synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didStart utterance: AVSpeechUtterance,
+    ) {
+        onPlaybackStarted?()
     }
 
     func speechSynthesizer(

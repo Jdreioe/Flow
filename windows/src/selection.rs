@@ -6,7 +6,9 @@ use windows::Win32::{
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
         CoUninitialize,
     },
-    UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId},
+    UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId,
+    },
 };
 
 const MAXIMUM_ANCESTORS: usize = 8;
@@ -23,7 +25,9 @@ struct ComScope;
 
 impl ComScope {
     fn new() -> Self {
-        unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); };
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        };
         ComScope
     }
 }
@@ -45,16 +49,16 @@ pub fn read_focused_selection() -> Result<String, SelectionError> {
     let automation: IUIAutomation =
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
             .map_err(|_| SelectionError::Unavailable)?;
-    let focused = unsafe { automation.GetFocusedElement() }
-        .map_err(|_| SelectionError::Unavailable)?;
+    let focused =
+        unsafe { automation.GetFocusedElement() }.map_err(|_| SelectionError::Unavailable)?;
 
     let owner = unsafe { focused.CurrentProcessId() }.map_err(|_| SelectionError::Unavailable)?;
     if owner >= 0 && owner as u32 == process::id() {
         return Err(SelectionError::Unavailable);
     }
 
-    let walker = unsafe { automation.ControlViewWalker() }
-        .map_err(|_| SelectionError::Unavailable)?;
+    let walker =
+        unsafe { automation.ControlViewWalker() }.map_err(|_| SelectionError::Unavailable)?;
     let mut element = Some(focused);
     let mut found_text_pattern = false;
     for _ in 0..=MAXIMUM_ANCESTORS {
