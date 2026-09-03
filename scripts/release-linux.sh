@@ -7,6 +7,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="jdreioe/Flow"
 BUILD_DIR="${TMPDIR:-/tmp}/flow-release-build"
 LINUXDEPLOY_URL="https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+LINUXDEPLOY_QT_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
 BUILD_ONLY="${FLOW_RELEASE_BUILD_ONLY:-0}"
 
 command -v cargo >/dev/null || { echo "error: cargo not found" >&2; exit 1; }
@@ -68,13 +69,16 @@ tar -xzf "$BUILD_DIR/tools/$PIPER_TARBALL" -C "$APPDIR/usr/bin" --strip-componen
 
 LINUXDEPLOY="$BUILD_DIR/tools/linuxdeploy-x86_64.AppImage"
 curl -fL -o "$LINUXDEPLOY" "$LINUXDEPLOY_URL"
-chmod +x "$LINUXDEPLOY"
+LINUXDEPLOY_QT="$BUILD_DIR/tools/linuxdeploy-plugin-qt-x86_64.AppImage"
+curl -fL -o "$LINUXDEPLOY_QT" "$LINUXDEPLOY_QT_URL"
+chmod +x "$LINUXDEPLOY" "$LINUXDEPLOY_QT"
 
 # The qt plugin bundles the linked Qt libraries and scans the QML sources so
 # every imported module ships inside the AppImage.
 export QML_SOURCES_PATHS="$PROJECT_ROOT/linux/qml"
 export EXTRA_QT_PLUGINS="svg;multimedia"
 export LD_LIBRARY_PATH="$APPDIR/usr/bin:${LD_LIBRARY_PATH:-}"
+export PATH="$BUILD_DIR/tools:$PATH"
 "$LINUXDEPLOY" --appimage-extract-and-run \
     --appdir "$APPDIR" \
     --plugin qt \
