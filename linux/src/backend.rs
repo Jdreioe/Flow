@@ -562,6 +562,7 @@ impl Default for FlowBackend {
             playback_finished: Default::default(),
             playback_failed: Default::default(),
             set_route_for_language: Default::default(),
+            fix_missing_route: Default::default(),
             set_text_language_override: Default::default(),
             set_override_route: Default::default(),
             update_setting: Default::default(),
