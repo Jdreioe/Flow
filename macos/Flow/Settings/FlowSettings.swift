@@ -107,6 +107,7 @@ struct FlowSettings: Codable, Equatable {
 
     var speechSource: SpeechSource = .system
     var hotKey: HotKeyPreset = .optionCommandR
+    var customHotKey = HotKeyBinding.optionCommandR
     var voiceIdentifier: String?
     var speechRate: Float = AVSpeechUtteranceDefaultSpeechRate
     var popupDismissSeconds: Double = 8
@@ -123,7 +124,7 @@ struct FlowSettings: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case speechSource, hotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction, wordHighlightingEnabled
+        case speechSource, hotKey, customHotKey, voiceIdentifier, speechRate, popupDismissSeconds, sameSelectionAction, wordHighlightingEnabled
         case azureVoiceName, azureSpeechRate
         case googleVoiceName, googleSpeechRate
         case playbackSpeed
@@ -140,6 +141,7 @@ struct FlowSettings: Codable, Equatable {
         // as the normal on-device source rather than discarding all settings.
         speechSource = (try? values.decodeIfPresent(SpeechSource.self, forKey: .speechSource)) ?? .system
         hotKey = try values.decodeIfPresent(HotKeyPreset.self, forKey: .hotKey) ?? .optionCommandR
+        customHotKey = try values.decodeIfPresent(HotKeyBinding.self, forKey: .customHotKey) ?? .optionCommandR
         voiceIdentifier = try values.decodeIfPresent(String.self, forKey: .voiceIdentifier)
         speechRate = try values.decodeIfPresent(Float.self, forKey: .speechRate) ?? AVSpeechUtteranceDefaultSpeechRate
         popupDismissSeconds = try values.decodeIfPresent(Double.self, forKey: .popupDismissSeconds) ?? 8
@@ -180,6 +182,10 @@ struct FlowSettings: Codable, Equatable {
         )
     }
 
+    var hotKeyBinding: HotKeyBinding {
+        hotKey == .custom ? customHotKey : hotKey.binding
+    }
+
     var allLanguageRoutes: [LanguageRoute] { [fallbackRoute] + languageRoutes }
 
     func languageRoute(for detectedTag: String) -> LanguageRoute? {
@@ -214,6 +220,7 @@ enum HotKeyPreset: String, Codable, CaseIterable, Identifiable {
     case optionCommandR
     case optionCommandSpace
     case controlOptionR
+    case custom
 
     var id: String { rawValue }
     var title: String {
@@ -221,20 +228,36 @@ enum HotKeyPreset: String, Codable, CaseIterable, Identifiable {
         case .optionCommandR: L10n.string("Option-Command-R")
         case .optionCommandSpace: L10n.string("Option-Command-Space")
         case .controlOptionR: L10n.string("Control-Option-R")
+        case .custom: L10n.string("Custom")
         }
     }
 
-    var keyCode: UInt32 {
+    var binding: HotKeyBinding {
         switch self {
-        case .optionCommandR, .controlOptionR: UInt32(kVK_ANSI_R)
-        case .optionCommandSpace: UInt32(kVK_Space)
+        case .optionCommandR, .custom: .optionCommandR
+        case .optionCommandSpace: HotKeyBinding(
+            keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | cmdKey), key: "Space")
+        case .controlOptionR: HotKeyBinding(
+            keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(optionKey | controlKey), key: "R")
         }
     }
+}
 
-    var modifiers: UInt32 {
-        switch self {
-        case .optionCommandR, .optionCommandSpace: UInt32(optionKey | cmdKey)
-        case .controlOptionR: UInt32(optionKey | controlKey)
-        }
+struct HotKeyBinding: Codable, Equatable {
+    var keyCode: UInt32
+    var modifiers: UInt32
+    var key: String
+
+    static let optionCommandR = HotKeyBinding(
+        keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(optionKey | cmdKey), key: "R")
+
+    var title: String {
+        var parts: [String] = []
+        if modifiers & UInt32(controlKey) != 0 { parts.append(L10n.string("Control")) }
+        if modifiers & UInt32(optionKey) != 0 { parts.append(L10n.string("Option")) }
+        if modifiers & UInt32(shiftKey) != 0 { parts.append(L10n.string("Shift")) }
+        if modifiers & UInt32(cmdKey) != 0 { parts.append(L10n.string("Command")) }
+        parts.append(key)
+        return parts.joined(separator: "-")
     }
 }

@@ -8,11 +8,11 @@ use ashpd::{
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
-use flow_core::model::HotKeyPreset;
+use flow_core::model::HotKey;
 
 #[derive(Debug)]
 pub enum Command {
-    Change(HotKeyPreset),
+    Change(HotKey),
     Stop,
 }
 
@@ -22,7 +22,7 @@ pub struct Callbacks<A, S> {
 }
 
 pub async fn run<A, S>(
-    mut preset: HotKeyPreset,
+    mut hot_key: HotKey,
     mut commands: mpsc::UnboundedReceiver<Command>,
     callbacks: Callbacks<A, S>,
 ) where
@@ -30,13 +30,13 @@ pub async fn run<A, S>(
     S: Fn(String) + Send + Sync + 'static,
 {
     loop {
-        match run_session(preset, &mut commands, &callbacks).await {
-            SessionResult::Change(next) => preset = next,
+        match run_session(&hot_key, &mut commands, &callbacks).await {
+            SessionResult::Change(next) => hot_key = next,
             SessionResult::Stop => break,
             SessionResult::Failed(message) => {
                 (callbacks.status)(message);
                 match commands.recv().await {
-                    Some(Command::Change(next)) => preset = next,
+                    Some(Command::Change(next)) => hot_key = next,
                     Some(Command::Stop) | None => break,
                 }
             }
@@ -45,13 +45,13 @@ pub async fn run<A, S>(
 }
 
 enum SessionResult {
-    Change(HotKeyPreset),
+    Change(HotKey),
     Stop,
     Failed(String),
 }
 
 async fn run_session<A, S>(
-    preset: HotKeyPreset,
+    hot_key: &HotKey,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     callbacks: &Callbacks<A, S>,
 ) -> SessionResult
@@ -77,7 +77,7 @@ where
         }
     };
     let shortcut = NewShortcut::new("read-selection", "Read selected text")
-        .preferred_trigger(Some(preset.preferred_trigger()));
+        .preferred_trigger(Some(hot_key.preferred_trigger()));
     let request = match portal
         .bind_shortcuts(
             &session,

@@ -36,8 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.popup?.hide()
             }
         }
-        model.onHotKeyChanged = { [weak self] preset in
-            self?.installHotKey(preset)
+        model.onHotKeyChanged = { [weak self] binding in
+            self?.installHotKey(binding)
         }
         model.onSettingsRequested = { [weak self] in
             self?.settingsWindow?.show()
@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pid = pid_t(application.processIdentifier)
             Task { await accessibilityPreparer.prepare(pid: pid) }
         }
-        installHotKey(model.settings.hotKey)
+        installHotKey(model.settings.hotKeyBinding)
         ChangelogWindowController.presentAfterUpdate()
         updater.checkForUpdatesAtLaunch()
     }
@@ -88,9 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ChangelogWindowController.showAll()
     }
 
-    private func installHotKey(_ preset: HotKeyPreset) {
+    private func installHotKey(_ binding: HotKeyBinding) {
         hotKey?.invalidate()
-        hotKey = GlobalHotKey(preset: preset) { [weak model] in
+        hotKey = GlobalHotKey(binding: binding) { [weak model] in
             Task { @MainActor in
                 model?.readSelectionFromHotKey()
             }
@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             model.hotKeyError = L10n.format(
                 "%@ is already in use. Choose another Flow shortcut.",
-                preset.title
+                binding.title
             )
         }
     }
@@ -167,15 +167,15 @@ final class FlowModel: ObservableObject {
     @Published var settings: FlowSettings {
         didSet {
             saveSettings()
-            if oldValue.hotKey != settings.hotKey {
-                onHotKeyChanged?(settings.hotKey)
+            if oldValue.hotKeyBinding != settings.hotKeyBinding {
+                onHotKeyChanged?(settings.hotKeyBinding)
             }
         }
     }
     @Published var hotKeyError: String?
 
     var onPopupVisibilityChanged: ((Bool) -> Void)?
-    var onHotKeyChanged: ((HotKeyPreset) -> Void)?
+    var onHotKeyChanged: ((HotKeyBinding) -> Void)?
     var onSettingsRequested: (() -> Void)?
     var onUpdatesRequested: (() -> Void)?
     var onWhatsNewRequested: (() -> Void)?
@@ -349,21 +349,21 @@ final class FlowModel: ObservableObject {
         case .failure(.permissionRequired):
             showMessage(L10n.string("Flow needs Accessibility permission to read selected text."))
         case .failure(.noSelectedText):
-            showMessage(L10n.format("Select some text, then press %@.", settings.hotKey.title))
+            showMessage(L10n.format("Select some text, then press %@.", settings.hotKeyBinding.title))
         case .failure(.selectionNeedsRefresh):
             showMessage(L10n.format(
                 "Flow couldn't read this selection yet. Select the text again, then press %@.",
-                settings.hotKey.title
+                settings.hotKeyBinding.title
             ))
         case .failure(.unavailable):
             showMessage(L10n.format(
                 "Flow couldn't read the selected text. Select it again, then press %@. If that still doesn't work, this app may not provide its selections to macOS.",
-                settings.hotKey.title
+                settings.hotKeyBinding.title
             ))
         case .success(let text):
             let normalized = Self.normalized(text)
             if normalized.isEmpty {
-                showMessage(L10n.format("Select some text, then press %@.", settings.hotKey.title))
+                showMessage(L10n.format("Select some text, then press %@.", settings.hotKeyBinding.title))
                 return
             }
             if normalized.count > FlowSettings.maximumSelectionCharacters {

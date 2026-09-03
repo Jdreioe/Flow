@@ -6,7 +6,7 @@ struct FlowMenu: View {
 
     var body: some View {
         Button("Read selected text") { model.readSelectionFromMenu() }
-        Text(model.settings.hotKey.title)
+        Text(model.settings.hotKeyBinding.title)
             .foregroundStyle(.secondary)
         if let error = model.hotKeyError {
             Text(error)

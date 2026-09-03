@@ -1,5 +1,12 @@
 "Access" = "Adgang";
 "Global hotkey" = "Global genvejstast";
+"Custom" = "Brugerdefineret";
+"Control" = "Ctrl";
+"Option" = "Alternativ";
+"Shift" = "Skift";
+"Command" = "Kommando";
+"Record custom global hotkey" = "Optag brugerdefineret global genvejstast";
+"Press a shortcut…" = "Tryk på en genvej…";
 "Allow Accessibility access" = "Giv adgang til Tilgængelighed";
 "Accessibility access allowed" = "Adgang til Tilgængelighed er givet";
 "Accessibility access not allowed" = "Adgang til Tilgængelighed er ikke givet";

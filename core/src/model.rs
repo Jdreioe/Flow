@@ -29,6 +29,67 @@ pub enum HotKeyPreset {
     AltSuperR,
     AltSuperSpace,
     ControlAltR,
+    Custom,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HotKey {
+    pub key: String,
+    pub control: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub super_key: bool,
+}
+
+impl Default for HotKey {
+    fn default() -> Self {
+        Self {
+            key: "R".into(),
+            control: false,
+            alt: true,
+            shift: false,
+            super_key: true,
+        }
+    }
+}
+
+impl HotKey {
+    pub fn title(&self, super_name: &str) -> String {
+        let mut parts = Vec::new();
+        if self.control {
+            parts.push("Ctrl");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        if self.super_key {
+            parts.push(super_name);
+        }
+        parts.push(&self.key);
+        parts.join("+")
+    }
+
+    pub fn preferred_trigger(&self) -> String {
+        let mut parts = Vec::new();
+        if self.control {
+            parts.push("CTRL".to_owned());
+        }
+        if self.alt {
+            parts.push("ALT".to_owned());
+        }
+        if self.shift {
+            parts.push("SHIFT".to_owned());
+        }
+        if self.super_key {
+            parts.push("LOGO".to_owned());
+        }
+        parts.push(self.key.to_ascii_lowercase());
+        parts.join("+")
+    }
 }
 
 impl HotKeyPreset {
@@ -37,6 +98,7 @@ impl HotKeyPreset {
             Self::AltSuperR => "ALT+LOGO+r",
             Self::AltSuperSpace => "ALT+LOGO+space",
             Self::ControlAltR => "CTRL+ALT+r",
+            Self::Custom => "ALT+LOGO+r",
         }
     }
 
@@ -45,6 +107,7 @@ impl HotKeyPreset {
             Self::AltSuperR => "Alt-Super-R",
             Self::AltSuperSpace => "Alt-Super-Space",
             Self::ControlAltR => "Control-Alt-R",
+            Self::Custom => "Custom",
         }
     }
 }
@@ -102,6 +165,7 @@ impl Default for LanguageRoute {
 pub struct Settings {
     pub speech_source: SpeechSource,
     pub hot_key: HotKeyPreset,
+    pub custom_hot_key: HotKey,
     pub system_voice_name: Option<String>,
     pub system_speech_rate: f64,
     pub popup_dismiss_seconds: f64,
@@ -124,6 +188,7 @@ impl Default for Settings {
         Self {
             speech_source: SpeechSource::System,
             hot_key: HotKeyPreset::AltSuperR,
+            custom_hot_key: HotKey::default(),
             system_voice_name: None,
             system_speech_rate: 0.0,
             popup_dismiss_seconds: 8.0,
@@ -144,6 +209,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn hot_key_binding(&self) -> HotKey {
+        match self.hot_key {
+            HotKeyPreset::AltSuperR => HotKey::default(),
+            HotKeyPreset::AltSuperSpace => HotKey {
+                key: "Space".into(),
+                ..HotKey::default()
+            },
+            HotKeyPreset::ControlAltR => HotKey {
+                control: true,
+                super_key: false,
+                ..HotKey::default()
+            },
+            HotKeyPreset::Custom => self.custom_hot_key.clone(),
+        }
+    }
+
     pub fn fallback_route(&self) -> LanguageRoute {
         LanguageRoute {
             id: FALLBACK_ROUTE_ID,
@@ -198,5 +279,49 @@ mod tests {
             settings.language_route("en-GB").unwrap().language_tag,
             "en-US"
         );
+    }
+
+    #[test]
+    fn hot_key_binding_resolves_presets_and_custom() {
+        let settings = Settings::default();
+        assert_eq!(settings.hot_key_binding(), HotKey::default());
+
+        let settings = Settings {
+            hot_key: HotKeyPreset::AltSuperSpace,
+            ..Settings::default()
+        };
+        assert_eq!(settings.hot_key_binding().key, "Space");
+
+        let custom = HotKey {
+            key: "F5".into(),
+            control: true,
+            alt: false,
+            shift: true,
+            super_key: false,
+        };
+        let settings = Settings {
+            hot_key: HotKeyPreset::Custom,
+            custom_hot_key: custom.clone(),
+            ..Settings::default()
+        };
+        assert_eq!(settings.hot_key_binding(), custom);
+    }
+
+    #[test]
+    fn hot_key_titles_and_triggers() {
+        let hot_key = HotKey::default();
+        assert_eq!(hot_key.title("Win"), "Alt+Win+R");
+        assert_eq!(hot_key.title("Super"), "Alt+Super+R");
+        assert_eq!(hot_key.preferred_trigger(), "ALT+LOGO+r");
+
+        let hot_key = HotKey {
+            key: "Space".into(),
+            control: true,
+            alt: false,
+            shift: true,
+            super_key: false,
+        };
+        assert_eq!(hot_key.title("Win"), "Ctrl+Shift+Space");
+        assert_eq!(hot_key.preferred_trigger(), "CTRL+SHIFT+space");
     }
 }

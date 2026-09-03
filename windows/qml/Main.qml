@@ -43,6 +43,47 @@ ApplicationWindow {
         }
     }
 
+    component HotKeyRecorder: Button {
+        id: recorder
+        property bool recording: false
+        text: recording ? qsTr("Press a shortcut…") : root.customHotKeyTitle()
+        Accessible.name: qsTr("Record custom global hotkey")
+        onClicked: {
+            recording = true
+            forceActiveFocus()
+        }
+        Keys.onPressed: function(event) {
+            if (!recording)
+                return
+            if (event.key === Qt.Key_Escape) {
+                recording = false
+                event.accepted = true
+                return
+            }
+            let key = ""
+            if (event.key >= 0x41 && event.key <= 0x5a)
+                key = String.fromCharCode(event.key)
+            else if (event.key >= 0x30 && event.key <= 0x39)
+                key = String.fromCharCode(event.key)
+            else if (event.key === Qt.Key_Space)
+                key = "Space"
+            else if (event.key >= Qt.Key_F1 && event.key <= Qt.Key_F12)
+                key = "F" + (event.key - Qt.Key_F1 + 1)
+            else if ((event.text || "") !== "" && event.text.length === 1)
+                key = event.text.toUpperCase()
+            let modifiers = ""
+            if (event.modifiers & Qt.ControlModifier) modifiers += "C"
+            if (event.modifiers & Qt.AltModifier) modifiers += "A"
+            if (event.modifiers & Qt.ShiftModifier) modifiers += "S"
+            if (event.modifiers & Qt.MetaModifier) modifiers += "W"
+            if (key !== "" && modifiers !== "") {
+                backend.update_setting("customHotKey", modifiers + "|" + key)
+                recording = false
+            }
+            event.accepted = true
+        }
+    }
+
     function escapedHtml(value) {
         return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     }
@@ -116,8 +157,20 @@ ApplicationWindow {
         switch (settings.hotKey) {
         case "altSuperSpace": return qsTr("Alt+Win+Space")
         case "controlAltR": return qsTr("Ctrl+Alt+R")
+        case "custom": return customHotKeyTitle()
         default: return qsTr("Alt+Win+R")
         }
+    }
+
+    function customHotKeyTitle() {
+        let key = settings.customHotKey || { control: false, alt: true, shift: false, superKey: true, key: "R" }
+        let parts = []
+        if (key.control) parts.push(qsTr("Ctrl"))
+        if (key.alt) parts.push(qsTr("Alt"))
+        if (key.shift) parts.push(qsTr("Shift"))
+        if (key.superKey) parts.push(qsTr("Win"))
+        parts.push(key.key || "R")
+        return parts.join("+")
     }
 
     function allRoutes() {
@@ -715,15 +768,20 @@ ApplicationWindow {
                             ComboBox {
                                 Layout.fillWidth: true
                                 model: [
-                                    { value: "altSuperR", label: hotKeyTitle() },
+                                    { value: "altSuperR", label: qsTr("Alt+Win+R") },
                                     { value: "altSuperSpace", label: qsTr("Alt+Win+Space") },
-                                    { value: "controlAltR", label: qsTr("Ctrl+Alt+R") }
+                                    { value: "controlAltR", label: qsTr("Ctrl+Alt+R") },
+                                    { value: "custom", label: qsTr("Custom") }
                                 ]
                                 textRole: "label"
                                 valueRole: "value"
                                 currentIndex: model.findIndex(function(item) { return item.value === settings.hotKey })
                                 onActivated: backend.update_setting("hotKey", currentValue)
                             }
+                        }
+                        HotKeyRecorder {
+                            Layout.fillWidth: true
+                            visible: settings.hotKey === "custom"
                         }
                         CheckBox {
                             visible: settings.speechSource === "google"

@@ -3,13 +3,13 @@ import Foundation
 
 final class GlobalHotKey {
     private static let signature: OSType = 0x464C4F57 // FLOW
-    private let preset: HotKeyPreset
+    private let binding: HotKeyBinding
     private let action: () -> Void
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
 
-    init(preset: HotKeyPreset, action: @escaping () -> Void) {
-        self.preset = preset
+    init(binding: HotKeyBinding, action: @escaping () -> Void) {
+        self.binding = binding
         self.action = action
     }
 
@@ -34,8 +34,8 @@ final class GlobalHotKey {
 
         let id = EventHotKeyID(signature: Self.signature, id: 1)
         let registrationStatus = RegisterEventHotKey(
-            preset.keyCode,
-            preset.modifiers,
+            binding.keyCode,
+            binding.modifiers,
             id,
             GetApplicationEventTarget(),
             0,

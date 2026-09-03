@@ -1,4 +1,5 @@
 import AVFoundation
+import Carbon
 import SwiftUI
 
 struct FlowSettingsView: View {
@@ -14,6 +15,10 @@ struct FlowSettingsView: View {
                     ForEach(HotKeyPreset.allCases) { preset in
                         Text(preset.title).tag(preset)
                     }
+                }
+                if model.settings.hotKey == .custom {
+                    HotKeyRecorder(binding: $model.settings.customHotKey)
+                        .frame(height: 28)
                 }
                 Button("Allow Accessibility access") {
                     model.promptForAccessibilityPermission()
@@ -140,6 +145,77 @@ struct FlowSettingsView: View {
 
     private func addLanguage(_ languageTag: String) {
         model.addLanguageRoute(languageTag)
+    }
+}
+
+private struct HotKeyRecorder: NSViewRepresentable {
+    @Binding var binding: HotKeyBinding
+
+    func makeNSView(context: Context) -> RecorderButton {
+        let button = RecorderButton()
+        button.onRecord = { binding = $0 }
+        return button
+    }
+
+    func updateNSView(_ button: RecorderButton, context: Context) {
+        button.binding = binding
+        button.onRecord = { binding = $0 }
+        if !button.isRecording {
+            button.title = binding.title
+        }
+    }
+}
+
+private final class RecorderButton: NSButton {
+    var binding = HotKeyBinding.optionCommandR
+    var onRecord: ((HotKeyBinding) -> Void)?
+    private(set) var isRecording = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        bezelStyle = .rounded
+        target = self
+        action = #selector(beginRecording)
+        setAccessibilityLabel(L10n.string("Record custom global hotkey"))
+    }
+
+    required init?(coder: NSCoder) { nil }
+    override var acceptsFirstResponder: Bool { true }
+
+    @objc private func beginRecording() {
+        isRecording = true
+        title = L10n.string("Press a shortcut…")
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard isRecording else { return }
+        if event.keyCode == 53 {
+            isRecording = false
+            title = binding.title
+            return
+        }
+        guard let key = Self.keyName(for: event) else { return }
+        var modifiers: UInt32 = 0
+        if event.modifierFlags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if event.modifierFlags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if event.modifierFlags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        if event.modifierFlags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        guard modifiers != 0 else { return }
+        binding = HotKeyBinding(keyCode: UInt32(event.keyCode), modifiers: modifiers, key: key)
+        isRecording = false
+        title = binding.title
+        onRecord?(binding)
+    }
+
+    private static func keyName(for event: NSEvent) -> String? {
+        let functionKeys: [UInt16: String] = [
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+            98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+        ]
+        if let name = functionKeys[event.keyCode] { return name }
+        guard let characters = event.charactersIgnoringModifiers, characters.count == 1 else { return nil }
+        return characters == " " ? "Space" : characters.uppercased()
     }
 }
 

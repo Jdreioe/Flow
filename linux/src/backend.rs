@@ -21,7 +21,7 @@ use uuid::Uuid;
 use flow_core::{
     language::{self, Plan},
     model::{
-        FALLBACK_ROUTE_ID, HotKeyPreset, LanguageRoute, MAXIMUM_SELECTION_CHARACTERS,
+        FALLBACK_ROUTE_ID, HotKey, HotKeyPreset, LanguageRoute, MAXIMUM_SELECTION_CHARACTERS,
         SameSelectionAction, Settings, SpeechSource, language_base,
     },
 };
@@ -643,11 +643,11 @@ impl FlowBackend {
                 backend.shortcut_status_changed();
             }
         });
-        let preset = self.settings.hot_key;
+        let hot_key = self.settings.hot_key_binding();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("Flow can create an async runtime");
             runtime.block_on(shortcuts::run(
-                preset,
+                hot_key,
                 receiver,
                 shortcuts::Callbacks { activated, status },
             ));
@@ -766,7 +766,7 @@ impl FlowBackend {
         if normalized.is_empty() {
             self.show_message(format!(
                 "Select some text, then press {}.",
-                self.settings.hot_key.title()
+                self.settings.hot_key_binding().title("Super")
             ));
             return;
         }
@@ -1212,7 +1212,7 @@ impl FlowBackend {
     }
 
     fn apply_setting(&mut self, key: &str, value: &str) {
-        let previous_hotkey = self.settings.hot_key;
+        let previous_hotkey = self.settings.hot_key_binding();
         match key {
             "speechSource" => {
                 self.settings.speech_source = match value {
@@ -1233,8 +1233,15 @@ impl FlowBackend {
                 self.settings.hot_key = match value {
                     "altSuperSpace" => HotKeyPreset::AltSuperSpace,
                     "controlAltR" => HotKeyPreset::ControlAltR,
+                    "custom" => HotKeyPreset::Custom,
                     _ => HotKeyPreset::AltSuperR,
                 };
+            }
+            "customHotKey" => {
+                if let Some(hot_key) = parse_hot_key(value) {
+                    self.settings.custom_hot_key = hot_key;
+                    self.settings.hot_key = HotKeyPreset::Custom;
+                }
             }
             "systemVoiceName" => {
                 self.settings.system_voice_name = nonempty(value);
@@ -1287,10 +1294,11 @@ impl FlowBackend {
             }
             _ => return,
         }
-        if previous_hotkey != self.settings.hot_key
+        let hot_key = self.settings.hot_key_binding();
+        if previous_hotkey != hot_key
             && let Some(sender) = &self.shortcut_commands
         {
-            let _ = sender.send(shortcuts::Command::Change(self.settings.hot_key));
+            let _ = sender.send(shortcuts::Command::Change(hot_key));
         }
         self.persist_settings();
     }
@@ -1780,6 +1788,48 @@ fn joined_sentences(plan: &Plan) -> (String, Vec<usize>) {
 fn nonempty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn parse_hot_key(value: &str) -> Option<HotKey> {
+    let mut parts = value.split('|');
+    let modifiers = parts.next()?;
+    let key = parts.next()?;
+    if parts.next().is_some()
+        || !modifiers
+            .bytes()
+            .any(|modifier| b"CASW".contains(&modifier))
+    {
+        return None;
+    }
+    let key = normalize_hot_key(key)?;
+    Some(HotKey {
+        key,
+        control: modifiers.contains('C'),
+        alt: modifiers.contains('A'),
+        shift: modifiers.contains('S'),
+        super_key: modifiers.contains('W'),
+    })
+}
+
+fn normalize_hot_key(key: &str) -> Option<String> {
+    if key == "Space" {
+        return Some(key.to_owned());
+    }
+    if key.len() == 1 {
+        let upper = key.to_ascii_uppercase();
+        let byte = upper.as_bytes()[0];
+        if byte.is_ascii_alphanumeric() || byte.is_ascii_punctuation() {
+            return Some(upper);
+        }
+        return None;
+    }
+    if let Some(number) = key.strip_prefix('F')
+        && let Ok(number) = number.parse::<u16>()
+        && (1..=12).contains(&number)
+    {
+        return Some(key.to_owned());
+    }
+    None
 }
 
 fn serialize<T: Serialize>(value: &T) -> String {

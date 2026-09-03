@@ -4,21 +4,21 @@ use std::{
 };
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
     UnregisterHotKey, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_HOTKEY,
 };
 
-use flow_core::model::HotKeyPreset;
+use flow_core::model::HotKey;
 
 const HOTKEY_ID: i32 = 1;
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug)]
 pub enum Command {
-    Change(HotKeyPreset),
+    Change(HotKey),
     Stop,
 }
 
@@ -29,13 +29,13 @@ pub struct Callbacks<A, S> {
 
 /// Registers the preset's global shortcut and pumps a Win32 message loop until
 /// the preset changes or the service stops.
-pub fn run<A, S>(mut preset: HotKeyPreset, receiver: Receiver<Command>, callbacks: Callbacks<A, S>)
+pub fn run<A, S>(mut hot_key: HotKey, receiver: Receiver<Command>, callbacks: Callbacks<A, S>)
 where
     A: Fn(()) + Send + Sync + 'static,
     S: Fn(String) + Send + Sync + 'static,
 {
     loop {
-        match register(preset) {
+        match register(&hot_key) {
             Ok(title) => (callbacks.status)(format!("Global shortcut: {title}")),
             Err(_) => (callbacks.status)(
                 "Flow could not register its global shortcut. The key combination may already be in use."
@@ -45,7 +45,7 @@ where
         match pump(&receiver, &callbacks) {
             LoopResult::Change(next) => {
                 unregister();
-                preset = next;
+                hot_key = next;
             }
             LoopResult::Stop => break,
         }
@@ -54,7 +54,7 @@ where
 }
 
 enum LoopResult {
-    Change(HotKeyPreset),
+    Change(HotKey),
     Stop,
 }
 
@@ -82,11 +82,11 @@ where
     }
 }
 
-fn register(preset: HotKeyPreset) -> Result<&'static str, ()> {
-    let (modifiers, key) = binding(preset);
+fn register(hot_key: &HotKey) -> Result<String, ()> {
+    let (modifiers, key) = binding(hot_key).ok_or(())?;
     unsafe { RegisterHotKey(None, HOTKEY_ID, modifiers, key.0 as u32) }
         .is_ok()
-        .then(|| title(preset))
+        .then(|| hot_key.title("Win"))
         .ok_or(())
 }
 
@@ -96,27 +96,31 @@ fn unregister() {
     }
 }
 
-fn binding(preset: HotKeyPreset) -> (HOT_KEY_MODIFIERS, VIRTUAL_KEY) {
-    match preset {
-        HotKeyPreset::AltSuperR => (
-            HOT_KEY_MODIFIERS(MOD_ALT.0 | MOD_WIN.0 | MOD_NOREPEAT.0),
-            VIRTUAL_KEY(0x52), // R
-        ),
-        HotKeyPreset::AltSuperSpace => (
-            HOT_KEY_MODIFIERS(MOD_ALT.0 | MOD_WIN.0 | MOD_NOREPEAT.0),
-            VIRTUAL_KEY(0x20), // Space
-        ),
-        HotKeyPreset::ControlAltR => (
-            HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0 | MOD_NOREPEAT.0),
-            VIRTUAL_KEY(0x52), // R
-        ),
+fn binding(hot_key: &HotKey) -> Option<(HOT_KEY_MODIFIERS, VIRTUAL_KEY)> {
+    let mut modifiers = MOD_NOREPEAT.0;
+    if hot_key.control {
+        modifiers |= MOD_CONTROL.0;
     }
-}
-
-fn title(preset: HotKeyPreset) -> &'static str {
-    match preset {
-        HotKeyPreset::AltSuperR => "Alt+Win+R",
-        HotKeyPreset::AltSuperSpace => "Alt+Win+Space",
-        HotKeyPreset::ControlAltR => "Ctrl+Alt+R",
+    if hot_key.alt {
+        modifiers |= MOD_ALT.0;
     }
+    if hot_key.shift {
+        modifiers |= MOD_SHIFT.0;
+    }
+    if hot_key.super_key {
+        modifiers |= MOD_WIN.0;
+    }
+    let key = match hot_key.key.as_str() {
+        "Space" => 0x20,
+        key if key.len() == 1 => key.as_bytes()[0].to_ascii_uppercase() as u16,
+        key if key.starts_with('F') => {
+            let number = key[1..].parse::<u16>().ok()?;
+            if !(1..=12).contains(&number) {
+                return None;
+            }
+            0x6F + number
+        }
+        _ => return None,
+    };
+    Some((HOT_KEY_MODIFIERS(modifiers), VIRTUAL_KEY(key)))
 }
