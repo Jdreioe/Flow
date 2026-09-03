@@ -51,6 +51,7 @@ mkdir -p "$APPDIR/usr/bin" \
     "$APPDIR/usr/share/icons/hicolor/48x48/apps"
 cp "$BINARY" "$APPDIR/usr/bin/flow-linux"
 cp "$PROJECT_ROOT/linux/io.github.jdreioe.flow.desktop" "$APPDIR/"
+cp "$PROJECT_ROOT/linux/assets/flow-48.png" "$APPDIR/io.github.jdreioe.flow.png"
 for SIZE in 16 32 48; do
     cp "$PROJECT_ROOT/linux/assets/flow-$SIZE.png" \
         "$APPDIR/usr/share/icons/hicolor/${SIZE}x${SIZE}/apps/io.github.jdreioe.flow.png"
