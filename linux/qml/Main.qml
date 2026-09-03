@@ -551,7 +551,6 @@ ApplicationWindow {
         visible: false
         width: 520
         height: popupBody.implicitHeight + 40
-        minimumHeight: 200
         minimumWidth: 420
         color: "transparent"
         title: "Flow playback"
