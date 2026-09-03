@@ -20,7 +20,9 @@ struct FlowSettingsView: View {
                 }
                 HStack {
                     Label(
-                        model.accessibilityTrusted ? "Accessibility access allowed" : "Accessibility access not allowed",
+                        L10n.string(model.accessibilityTrusted
+                            ? "Accessibility access allowed"
+                            : "Accessibility access not allowed"),
                         systemImage: model.accessibilityTrusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                     )
                     .foregroundStyle(model.accessibilityTrusted ? .green : .orange)
@@ -162,7 +164,7 @@ private struct GoogleVoiceMenu: View {
     }
 
     private var selectionTitle: String {
-        guard let name = selection else { return "Google default voice" }
+        guard let name = selection else { return L10n.string("Google default voice") }
         return voices.first { $0.name == name }?.displayName ?? name
     }
 
@@ -195,7 +197,7 @@ private struct GoogleVoiceList: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 1) {
-                row(title: "Google default voice", isSelected: selection == nil) {
+                row(title: L10n.string("Google default voice"), isSelected: selection == nil) {
                     selection = nil
                     dismiss()
                 }
@@ -301,7 +303,7 @@ private struct LanguageRouteEditor: View {
         VStack(alignment: .leading, spacing: 6) {
             if showsHeader {
                 HStack {
-                    Text(isDefault ? "Fallback voice" : route.displayName)
+                    Text(isDefault ? L10n.string("Fallback voice") : route.displayName)
                         .font(.headline)
                     Spacer()
                     if !isDefault {
@@ -425,12 +427,12 @@ private struct CollapsibleLanguageRouteEditor: View {
 
     private var voiceSummary: String {
         if showSystemRoute {
-            return route.systemVoiceIdentifier ?? "System default voice"
+            return route.systemVoiceIdentifier ?? L10n.string("System default voice")
         }
         if showAzureRoute {
-            return route.azureVoiceName ?? "Fallback Azure voice"
+            return route.azureVoiceName ?? L10n.string("Fallback Azure voice")
         }
-        return route.googleVoiceName ?? "Google default voice"
+        return route.googleVoiceName ?? L10n.string("Google default voice")
     }
 }
 
@@ -462,7 +464,7 @@ private struct SpeechConfigurationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if model.azureVoices.isEmpty {
-                    Text(model.azureVoiceLoadError ?? "Loading Azure voices…")
+                    Text(model.azureVoiceLoadError ?? L10n.string("Loading Azure voices…"))
                         .font(.caption)
                         .foregroundStyle(model.azureVoiceLoadError == nil ? Color.secondary : Color.orange)
                 } else {

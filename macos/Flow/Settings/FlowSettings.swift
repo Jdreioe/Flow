@@ -13,8 +13,8 @@ struct FlowSettings: Codable, Equatable {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .pauseResume: "Pause or resume"
-            case .restart: "Restart reading"
+            case .pauseResume: L10n.string("Pause or resume")
+            case .restart: L10n.string("Restart reading")
             }
         }
     }
@@ -27,9 +27,9 @@ struct FlowSettings: Codable, Equatable {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .system: "System voice"
-            case .azure: "Azure voice"
-            case .google: "Google Cloud voice"
+            case .system: L10n.string("System voice")
+            case .azure: L10n.string("Azure voice")
+            case .google: L10n.string("Google Cloud voice")
             }
         }
     }
@@ -105,7 +105,9 @@ struct FlowSettings: Codable, Equatable {
         case perLanguage
 
         var id: String { rawValue }
-        var title: String { self == .multilingual ? "One multilingual voice" : "A voice per language" }
+        var title: String {
+            L10n.string(self == .multilingual ? "One multilingual voice" : "A voice per language")
+        }
     }
 
     var speechSource: SpeechSource = .system
@@ -208,9 +210,9 @@ enum HotKeyPreset: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .optionCommandR: "Option-Command-R"
-        case .optionCommandSpace: "Option-Command-Space"
-        case .controlOptionR: "Control-Option-R"
+        case .optionCommandR: L10n.string("Option-Command-R")
+        case .optionCommandSpace: L10n.string("Option-Command-Space")
+        case .controlOptionR: L10n.string("Control-Option-R")
         }
     }
 

@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import AVFoundation
 import Carbon
 import SwiftUI
@@ -76,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         installHotKey(model.settings.hotKey)
         ChangelogWindowController.presentAfterUpdate()
+        updater.checkForUpdatesAtLaunch()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -99,7 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try hotKey?.register()
             model.hotKeyError = nil
         } catch {
-            model.hotKeyError = "\(preset.title) is already in use. Choose another Flow shortcut."
+            model.hotKeyError = L10n.format(
+                "%@ is already in use. Choose another Flow shortcut.",
+                preset.title
+            )
         }
     }
 }
@@ -199,15 +202,24 @@ final class FlowModel: ObservableObject {
                 self?.finishedReading()
             }
         }
+        let playbackStarted: () -> Void = { [weak self] in
+            Task { @MainActor in
+                guard self?.state == .preparing else { return }
+                self?.state = .playing
+            }
+        }
+        systemSpeech.onPlaybackStarted = playbackStarted
         systemSpeech.onFinished = finished
         systemSpeech.onWordRange = { [weak self] range in
             Task { @MainActor in self?.progress.wordRange = range }
         }
         azureSpeech.onFinished = finished
+        azureSpeech.onPlaybackStarted = playbackStarted
         azureSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
         }
         googleSpeech.onFinished = finished
+        googleSpeech.onPlaybackStarted = playbackStarted
         googleSpeech.onFailure = { [weak self] message in
             Task { @MainActor in self?.showMessage(message) }
         }
@@ -264,7 +276,6 @@ final class FlowModel: ObservableObject {
         state = .preparing
         onPopupVisibilityChanged?(true)
         speech.read(plan, settings: settings)
-        state = .playing
     }
 
     func previewGoogleVoice(named voiceName: String?, languageTag: String) {
@@ -339,24 +350,27 @@ final class FlowModel: ObservableObject {
         manualRouteNeeded = false
         switch AccessibilitySelectionReader.readFocusedSelection() {
         case .failure(.permissionRequired):
-            showMessage("Flow needs Accessibility permission to read selected text.")
+            showMessage(L10n.string("Flow needs Accessibility permission to read selected text."))
         case .failure(.noSelectedText):
-            showMessage("Select some text, then press \(settings.hotKey.title).")
+            showMessage(L10n.format("Select some text, then press %@.", settings.hotKey.title))
         case .failure(.selectionNeedsRefresh):
-            showMessage(
-                "Zen has not exposed this selection to macOS yet. "
-                    + "Select the text again, then press \(settings.hotKey.title)."
-            )
-        case .failure(.unavailable(let underlying)):
-            showMessage(Self.captureFailureMessage(underlying))
+            showMessage(L10n.format(
+                "Flow couldn't read this selection yet. Select the text again, then press %@.",
+                settings.hotKey.title
+            ))
+        case .failure(.unavailable):
+            showMessage(L10n.format(
+                "Flow couldn't read the selected text. Select it again, then press %@. If that still doesn't work, this app may not provide its selections to macOS.",
+                settings.hotKey.title
+            ))
         case .success(let text):
             let normalized = Self.normalized(text)
             if normalized.isEmpty {
-                showMessage("Select some text, then press \(settings.hotKey.title).")
+                showMessage(L10n.format("Select some text, then press %@.", settings.hotKey.title))
                 return
             }
             if normalized.count > FlowSettings.maximumSelectionCharacters {
-                showMessage("This selection is longer than Flow's 10-minute reading limit.")
+                showMessage(L10n.string("This selection is longer than Flow's 10-minute reading limit."))
                 return
             }
             if normalized == Self.normalized(selectedText), settings.sameSelectionAction == .pauseResume,
@@ -477,7 +491,6 @@ final class FlowModel: ObservableObject {
         state = .preparing
         onPopupVisibilityChanged?(true)
         speech.read(plan, settings: settings)
-        state = .playing
     }
 
     private func showMessage(_ message: String) {
@@ -539,7 +552,7 @@ final class FlowModel: ObservableObject {
                 self?.azureVoices = voices
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.azureVoiceLoadError = "Flow could not load Azure voices. Check the endpoint and key."
+                self?.azureVoiceLoadError = L10n.string("Flow could not load Azure voices. Check the endpoint and key.")
             }
         }
     }
@@ -569,7 +582,7 @@ final class FlowModel: ObservableObject {
                 self?.googleVoices = voices
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.googleVoiceLoadError = "Flow could not load Google voices. Check the API key and confirm that Cloud Text-to-Speech is enabled."
+                self?.googleVoiceLoadError = L10n.string("Flow could not load Google voices. Check the API key and confirm that Cloud Text-to-Speech is enabled.")
             }
         }
     }
@@ -580,40 +593,17 @@ final class FlowModel: ObservableObject {
             return systemSpeech
         case .azure:
             guard azureEndpoint != nil else {
-                showMessage("Set up Azure Speech before choosing Azure voice.")
+                showMessage(L10n.string("Set up Azure Speech before choosing Azure voice."))
                 return nil
             }
             return azureSpeech
         case .google:
             guard googleConfigured else {
-                showMessage("Set up Google Cloud Text-to-Speech before choosing Google voice.")
+                showMessage(L10n.string("Set up Google Cloud Text-to-Speech before choosing Google voice."))
                 return nil
             }
             return googleSpeech
         }
-    }
-
-    private static func captureFailureMessage(_ underlying: AXError?) -> String {
-        let base = "This application does not expose its selected text to macOS."
-        guard let underlying, underlying != .success else { return base }
-        let detail: String
-        switch underlying {
-        case .cannotComplete:
-            detail = "cannotComplete (the application was too busy to answer Accessibility; try again)"
-        case .apiDisabled:
-            detail = "apiDisabled (Accessibility access is currently disabled)"
-        case .invalidUIElement:
-            detail = "invalidUIElement (the focused element went away)"
-        case .attributeUnsupported:
-            detail = "attributeUnsupported"
-        case .parameterizedAttributeUnsupported:
-            detail = "parameterizedAttributeUnsupported"
-        case .noValue:
-            detail = "noValue"
-        default:
-            detail = "code \(underlying.rawValue)"
-        }
-        return "\(base) Accessibility reported \(detail)."
     }
 
     private static func normalized(_ text: String) -> String {

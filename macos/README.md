@@ -32,11 +32,33 @@ GitHub release as `appcast.xml`, and each release archive is signed with the
 EdDSA key stored in the release machine's login Keychain. Only the matching
 public key is included in `Flow.app`.
 
-Generate the key once, from Sparkle's `bin/generate_keys` tool. Do not export
-or commit the private key. `scripts/release-macos.sh` builds the app, notarizes
-it, creates the signed appcast, and uploads both the ZIP and `appcast.xml`.
-Before each release, increment `CURRENT_PROJECT_VERSION` and set
-`MARKETING_VERSION` to the release version in the Xcode project.
+Generate the key once, from Sparkle's `bin/generate_keys` tool. Never commit the
+private key. `scripts/release-macos.sh` builds the app, notarizes it, creates the
+signed appcast, and uploads both the ZIP and `appcast.xml`. The script applies
+the requested marketing version and increments the build version in its working
+tree before building.
+
+## GitHub release workflow
+
+The `Release Flow` action builds macOS, Linux, and Windows in parallel, then
+publishes every package to one GitHub Release. Run it manually and enter a
+`major.minor.patch` version.
+
+The macOS job needs these repository secrets:
+
+- `MACOS_CERTIFICATE_BASE64`: the Developer ID Application certificate and
+  private key exported as a password-protected `.p12`, then base64 encoded.
+- `MACOS_CERTIFICATE_PASSWORD`: the `.p12` export password.
+- `APPLE_ID`: the Apple ID used for notarization.
+- `APPLE_TEAM_ID`: the Apple Developer team ID.
+- `APPLE_APP_PASSWORD`: an app-specific password for notarization.
+- `SPARKLE_ED_PRIVATE_KEY`: the existing Sparkle EdDSA private key. The job
+  passes it to `generate_appcast` through standard input. Sparkle's
+  `generate_keys -x private-key-file` command exports the existing key for
+  adding to this secret.
+
+`VPK_SIGNPARAMS` is optional. When configured, the Windows job passes it to
+Velopack for installer signing.
 
 ## First use
 

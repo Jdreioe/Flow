@@ -12,7 +12,7 @@ final class SettingsWindowController {
             backing: .buffered,
             defer: false,
         )
-        window.title = "Flow Settings"
+        window.title = L10n.string("Flow Settings")
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: FlowSettingsView(model: model))
     }

@@ -7,8 +7,8 @@ enum GoogleConfigurationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidKey: "Enter a valid Google Cloud API key."
-        case .keychain: "Flow could not save the Google Cloud credential in your Keychain."
+        case .invalidKey: L10n.string("Enter a valid Google Cloud API key.")
+        case .keychain: L10n.string("Flow could not save the Google Cloud credential in your Keychain.")
         }
     }
 }

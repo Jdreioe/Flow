@@ -30,8 +30,7 @@ use flow_core::{
 use crate::{
     azure::{self, AzureVoice},
     google::{self, GoogleVoice},
-    selection, settings,
-    shortcuts,
+    selection, settings, shortcuts,
     system_speech::{self, SystemVoice},
 };
 
@@ -44,6 +43,12 @@ enum PlaybackState {
     AwaitingRoute,
     Finished,
     Message,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UpdateCheckKind {
+    Startup,
+    Manual,
 }
 
 impl PlaybackState {
@@ -359,7 +364,7 @@ pub struct FlowBackend {
     ),
     check_for_updates: qt_method!(
         fn check_for_updates(&mut self) {
-            self.start_update_check();
+            self.start_update_check(UpdateCheckKind::Manual);
         }
     ),
     restart_to_update: qt_method!(
@@ -374,11 +379,9 @@ pub struct FlowBackend {
                     backend.borrow_mut().show_message(message);
                 }
             });
-            std::thread::spawn(move || {
-                match apply_pending_update() {
-                    Ok(()) => {}
-                    Err(message) => deliver(message),
-                }
+            std::thread::spawn(move || match apply_pending_update() {
+                Ok(()) => {}
+                Err(message) => deliver(message),
             });
         }
     ),
@@ -541,10 +544,9 @@ impl FlowBackend {
             }
         });
         let preset = self.settings.hot_key;
-        std::thread::spawn(move || shortcuts::run(preset, receiver, shortcuts::Callbacks {
-            activated,
-            status,
-        }));
+        std::thread::spawn(move || {
+            shortcuts::run(preset, receiver, shortcuts::Callbacks { activated, status })
+        });
 
         let voices_pointer = QPointer::from(&*self);
         let voices_changed = queued_callback(move |voices: Vec<SystemVoice>| {
@@ -586,6 +588,8 @@ impl FlowBackend {
         if self.settings.google_api_key_configured {
             self.load_google_voices();
         }
+
+        self.start_update_check(UpdateCheckKind::Startup);
     }
 
     fn request_selection(&mut self) {
@@ -1298,7 +1302,7 @@ impl FlowBackend {
         });
     }
 
-    fn start_update_check(&mut self) {
+    fn start_update_check(&mut self, kind: UpdateCheckKind) {
         let pointer = QPointer::from(&*self);
         let deliver = queued_callback(move |result: Result<UpdateOutcome, String>| {
             if let Some(backend) = pointer.as_pinned() {
@@ -1307,27 +1311,20 @@ impl FlowBackend {
                     backend.update_ready_version = version.clone().into();
                     backend.update_ready_version_changed();
                 }
+                let message = match result {
+                    Ok(UpdateOutcome::UpToDate) if kind == UpdateCheckKind::Manual => {
+                        "Flow is up to date.".to_owned()
+                    }
+                    Ok(UpdateOutcome::Downloaded(version)) => {
+                        format!("Flow {version} is downloaded. Restart Flow to finish updating.")
+                    }
+                    Err(message) if kind == UpdateCheckKind::Manual => message,
+                    Ok(UpdateOutcome::UpToDate) | Err(_) => return,
+                };
                 // Never interrupt active reading for an update check.
                 if backend.playback_state == PlaybackState::Hidden {
-                    match result {
-                        Ok(UpdateOutcome::UpToDate) => {
-                            backend.show_message("Flow is up to date.");
-                        }
-                        Ok(UpdateOutcome::Downloaded(version)) => {
-                            backend.show_message(format!(
-                                "Flow {version} is downloaded. Restart Flow to finish updating."
-                            ));
-                        }
-                        Err(message) => backend.show_message(message),
-                    }
+                    backend.show_message(message);
                 } else {
-                    let message = match result {
-                        Ok(UpdateOutcome::UpToDate) => "Flow is up to date.".to_owned(),
-                        Ok(UpdateOutcome::Downloaded(version)) => format!(
-                            "Flow {version} is downloaded. Restart Flow to finish updating."
-                        ),
-                        Err(message) => message,
-                    };
                     backend.message = message.into();
                     backend.message_changed();
                 }
@@ -1369,7 +1366,11 @@ impl FlowBackend {
             return;
         }
         if selection::debug_enabled() {
-            eprintln!("[Flow debug] set_state {} -> {}", self.playback_state.id(), state.id());
+            eprintln!(
+                "[Flow debug] set_state {} -> {}",
+                self.playback_state.id(),
+                state.id()
+            );
         }
         self.playback_state = state;
         self.state = state.id().into();

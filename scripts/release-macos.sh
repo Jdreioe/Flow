@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build Flow.app, tag a release, and publish it to GitHub Releases.
 # Usage: scripts/release-macos.sh [version]
 #   version defaults to MARKETING_VERSION from the Xcode project.
@@ -10,13 +10,16 @@ SCHEME="Flow"
 REPO="jdreioe/Flow"
 BUILD_DIR="${TMPDIR:-/tmp}/flow-release-build"
 CONFIGURATION="Release"
-DEVELOPMENT_TEAM="9BB3E6JDX4"
+DEVELOPMENT_TEAM="${FLOW_DEVELOPMENT_TEAM:-9BB3E6JDX4}"
 SIGN_IDENTITY="Developer ID Application"
 NOTARY_PROFILE="${FLOW_NOTARY_PROFILE:-Flow-Notary}"
+BUILD_ONLY="${FLOW_RELEASE_BUILD_ONLY:-0}"
 
 command -v xcodebuild >/dev/null || { echo "error: xcodebuild not found" >&2; exit 1; }
-command -v gh >/dev/null || { echo "error: gh (GitHub CLI) not found" >&2; exit 1; }
-gh auth status >/dev/null 2>&1 || { echo "error: not authenticated with gh. Run: gh auth login" >&2; exit 1; }
+if [ "$BUILD_ONLY" != "1" ]; then
+    command -v gh >/dev/null || { echo "error: gh (GitHub CLI) not found" >&2; exit 1; }
+    gh auth status >/dev/null 2>&1 || { echo "error: not authenticated with gh. Run: gh auth login" >&2; exit 1; }
+fi
 
 if ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
     echo "error: no '$SIGN_IDENTITY' certificate found. Check Xcode > Settings > Accounts." >&2
@@ -43,8 +46,8 @@ esac
 
 echo "Releasing $TAG from $REPO"
 
-if git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
-    || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+if [ "$BUILD_ONLY" != "1" ] && { git -C "$PROJECT_ROOT" rev-parse "refs/tags/$TAG" >/dev/null 2>&1 \
+    || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; }; then
     echo "error: $TAG already exists" >&2
     exit 1
 fi
@@ -67,7 +70,14 @@ case "$CURRENT_PROJECT_VERSION" in
         exit 1
         ;;
 esac
-NEXT_PROJECT_VERSION="$((CURRENT_PROJECT_VERSION + 1))"
+BUILD_NUMBER_INCREMENT="${FLOW_BUILD_NUMBER_INCREMENT:-1}"
+case "$BUILD_NUMBER_INCREMENT" in
+    ''|*[!0-9]*|0)
+        echo "error: FLOW_BUILD_NUMBER_INCREMENT must be a positive integer" >&2
+        exit 1
+        ;;
+esac
+NEXT_PROJECT_VERSION="$((CURRENT_PROJECT_VERSION + BUILD_NUMBER_INCREMENT))"
 echo "Updating Xcode marketing version to $VERSION..."
 sed -i '' -E "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = $VERSION;/g" "$PROJECT_FILE"
 echo "Updating Sparkle build version to $NEXT_PROJECT_VERSION..."
@@ -127,11 +137,11 @@ if [ -d "$SPARKLE_FRAMEWORK" ]; then
         sign_code "$COMPONENT"
         verify_developer_id_signature "$COMPONENT"
     done
-    for AUTOUPDATE_BINARY in "$SPARKLE_VERSION"/Autoupdate; do
-        [ -e "$AUTOUPDATE_BINARY" ] || continue
+    AUTOUPDATE_BINARY="$SPARKLE_VERSION/Autoupdate"
+    if [ -e "$AUTOUPDATE_BINARY" ]; then
         sign_code "$AUTOUPDATE_BINARY"
         verify_developer_id_signature "$AUTOUPDATE_BINARY"
-    done
+    fi
     sign_code "$SPARKLE_FRAMEWORK"
     verify_developer_id_signature "$SPARKLE_FRAMEWORK"
 fi
@@ -166,7 +176,19 @@ ditto -c -k --keepParent "$APP" "$ZIP_PATH"
 echo "Submitting $TAG to Apple notarization (this can take a few minutes)..."
 NOTARY_RESULT="$BUILD_DIR/notarization-result.plist"
 NOTARY_LOG="$BUILD_DIR/notarization-log.json"
-if xcrun notarytool submit "$ZIP_PATH" \
+if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+    NOTARY_AUTH="apple-id"
+else
+    NOTARY_AUTH="keychain"
+fi
+if [ "$NOTARY_AUTH" = "apple-id" ]; then
+    xcrun notarytool submit "$ZIP_PATH" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_PASSWORD" \
+        --wait \
+        --output-format plist > "$NOTARY_RESULT" && NOTARY_EXIT=0 || NOTARY_EXIT=$?
+elif xcrun notarytool submit "$ZIP_PATH" \
     --keychain-profile "$NOTARY_PROFILE" \
     --wait \
     --output-format plist > "$NOTARY_RESULT"; then
@@ -177,7 +199,9 @@ fi
 
 if [ "$NOTARY_EXIT" -ne 0 ]; then
     echo "error: notarization failed." >&2
-    echo "  One-time setup: xcrun notarytool store-credentials \"$NOTARY_PROFILE\"" >&2
+    if [ "$NOTARY_AUTH" = "keychain" ]; then
+        echo "  One-time setup: xcrun notarytool store-credentials \"$NOTARY_PROFILE\"" >&2
+    fi
     exit 1
 fi
 
@@ -186,9 +210,18 @@ NOTARY_ID="$(/usr/libexec/PlistBuddy -c 'Print :id' "$NOTARY_RESULT" 2>/dev/null
 if [ "$NOTARY_STATUS" != "Accepted" ]; then
     echo "error: notarization status is '${NOTARY_STATUS:-unknown}', not Accepted." >&2
     if [ -n "$NOTARY_ID" ]; then
-        if xcrun notarytool log "$NOTARY_ID" \
-            --keychain-profile "$NOTARY_PROFILE" \
-            "$NOTARY_LOG"; then
+        if [ "$NOTARY_AUTH" = "apple-id" ]; then
+            xcrun notarytool log "$NOTARY_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_PASSWORD" \
+                "$NOTARY_LOG" && LOG_EXIT=0 || LOG_EXIT=$?
+        else
+            xcrun notarytool log "$NOTARY_ID" \
+                --keychain-profile "$NOTARY_PROFILE" \
+                "$NOTARY_LOG" && LOG_EXIT=0 || LOG_EXIT=$?
+        fi
+        if [ "$LOG_EXIT" -eq 0 ]; then
             echo "Notarization log: $NOTARY_LOG" >&2
         else
             echo "  Could not download the notarization log for $NOTARY_ID." >&2
@@ -215,10 +248,23 @@ UPDATES_DIR="$BUILD_DIR/updates"
 APPCAST_PATH="$BUILD_DIR/appcast.xml"
 mkdir -p "$UPDATES_DIR"
 cp "$ZIP_PATH" "$UPDATES_DIR/$(basename "$ZIP_PATH")"
-"$GENERATE_APPCAST" \
-    --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
-    -o "$APPCAST_PATH" \
-    "$UPDATES_DIR"
+if [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
+    printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$GENERATE_APPCAST" \
+        --ed-key-file - \
+        --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
+        -o "$APPCAST_PATH" \
+        "$UPDATES_DIR"
+else
+    "$GENERATE_APPCAST" \
+        --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
+        -o "$APPCAST_PATH" \
+        "$UPDATES_DIR"
+fi
+
+DIST_DIR="$PROJECT_ROOT/dist/macos"
+rm -rf "$DIST_DIR"
+mkdir -p "$DIST_DIR"
+cp "$ZIP_PATH" "$APPCAST_PATH" "$DIST_DIR/"
 
 NOTES_FILE="$BUILD_DIR/notes.md"
 cat > "$NOTES_FILE" <<EOF
@@ -229,11 +275,14 @@ Download and unzip, then drag Flow.app to /Applications.
 If macOS blocks the app on first launch, right-click Flow.app and choose Open.
 EOF
 
-gh release create "$TAG" \
-    --repo "$REPO" \
-    --title "Flow $TAG (macOS)" \
-    --notes-file "$NOTES_FILE" \
-    "$ZIP_PATH" \
-    "$APPCAST_PATH"
-
-echo "Published $TAG: https://github.com/$REPO/releases/tag/$TAG"
+if [ "$BUILD_ONLY" = "1" ]; then
+    echo "Packages ready for the shared release in $DIST_DIR"
+else
+    gh release create "$TAG" \
+        --repo "$REPO" \
+        --title "Flow $TAG (macOS)" \
+        --notes-file "$NOTES_FILE" \
+        "$ZIP_PATH" \
+        "$APPCAST_PATH"
+    echo "Published $TAG: https://github.com/$REPO/releases/tag/$TAG"
+fi

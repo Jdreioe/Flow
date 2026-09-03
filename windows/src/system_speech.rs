@@ -107,7 +107,10 @@ fn run(receiver: Receiver<Command>, callbacks: Callbacks) {
         if let Some(generation) = segment_generation
             && engine.segment_ended()
         {
-            if playback.as_ref().is_some_and(|item| item.generation == generation) {
+            if playback
+                .as_ref()
+                .is_some_and(|item| item.generation == generation)
+            {
                 segment_generation = speak_next(&engine, &mut playback, &callbacks);
             } else {
                 segment_generation = None;
@@ -164,7 +167,9 @@ struct Engine {
 
 impl Engine {
     fn new() -> Result<Self, String> {
-        unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); };
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        };
         let synthesizer = SpeechSynthesizer::new().map_err(speech_error)?;
         let player = MediaPlayer::new().map_err(speech_error)?;
         let ended = Arc::new(AtomicBool::new(false));
@@ -181,14 +186,8 @@ impl Engine {
         let mut voices = Vec::with_capacity(count as usize);
         for index in 0..count {
             let native: VoiceInformation = view.GetAt(index).map_err(speech_error)?;
-            let name = native
-                .DisplayName()
-                .map_err(speech_error)?
-                .to_string();
-            let language_tag = native
-                .Language()
-                .map_err(speech_error)?
-                .to_string();
+            let name = native.DisplayName().map_err(speech_error)?.to_string();
+            let language_tag = native.Language().map_err(speech_error)?.to_string();
             voices.push(VoiceEntry {
                 info: SystemVoice { name, language_tag },
                 native,
@@ -210,9 +209,8 @@ impl Engine {
             .SynthesizeTextToStreamAsync(&HSTRING::from(sentence.text.as_str()))
             .map_err(speech_error)?;
         let stream: SpeechSynthesisStream = operation.join().map_err(speech_error)?;
-        let source =
-            MediaSource::CreateFromStream(&stream, &HSTRING::from("audio/wav"))
-                .map_err(speech_error)?;
+        let source = MediaSource::CreateFromStream(&stream, &HSTRING::from("audio/wav"))
+            .map_err(speech_error)?;
         self.ended.store(false, Ordering::SeqCst);
         self.player.SetSource(&source).map_err(speech_error)?;
         self.player.Play().map_err(speech_error)
@@ -221,7 +219,9 @@ impl Engine {
     fn configure(&self, sentence: &Sentence) -> Result<(), String> {
         self.synthesizer
             .Options()
-            .and_then(|options| options.SetSpeakingRate(windows_rate(sentence.route.system_speech_rate)))
+            .and_then(|options| {
+                options.SetSpeakingRate(windows_rate(sentence.route.system_speech_rate))
+            })
             .map_err(speech_error)?;
         let requested = sentence.route.language_tag.replace('_', "-");
         let selected = sentence
@@ -256,7 +256,9 @@ impl Engine {
                 .player
                 .PlaybackSession()
                 .and_then(|session| session.PlaybackState())
-                .is_ok_and(|state| state == MediaPlaybackState::Playing || state == MediaPlaybackState::Paused)
+                .is_ok_and(|state| {
+                    state == MediaPlaybackState::Playing || state == MediaPlaybackState::Paused
+                })
     }
 }
 

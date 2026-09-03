@@ -1,0 +1,220 @@
+name: Release Flow
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version in major.minor.patch form, for example 0.8.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must use major.minor.patch, got: $INPUT_VERSION" >&2
+            exit 1
+          fi
+          tag="v$version"
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || \
+             gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$tag already exists" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Build Linux
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.0"
+          cache: true
+
+      - name: Build AppImage
+        env:
+          FLOW_RELEASE_BUILD_ONLY: "1"
+        run: scripts/release-linux.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows
+    needs: prepare
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.0"
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Build application
+        run: cargo build --release --locked --package flow-windows
+
+      - name: Install Velopack
+        run: dotnet tool update -g vpk
+
+      - name: Package installer and update feed
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          VPK_SIGNPARAMS: ${{ secrets.VPK_SIGNPARAMS }}
+        run: scripts/package-velopack.ps1
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/Releases/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE_BASE64" ] || [ -z "$MACOS_CERTIFICATE_PASSWORD" ]; then
+            echo "The macOS signing certificate secrets are not configured" >&2
+            exit 1
+          fi
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/flow-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 -D > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+          rm "$certificate_path"
+
+      - name: Build, sign, and notarize app
+        env:
+          FLOW_RELEASE_BUILD_ONLY: "1"
+          FLOW_BUILD_NUMBER_INCREMENT: ${{ github.run_number }}
+          FLOW_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          [ -n "$FLOW_DEVELOPMENT_TEAM" ] || { echo "The APPLE_TEAM_ID secret is not configured" >&2; exit 1; }
+          [ -n "$APPLE_ID" ] || { echo "The APPLE_ID secret is not configured" >&2; exit 1; }
+          [ -n "$APPLE_APP_PASSWORD" ] || { echo "The APPLE_APP_PASSWORD secret is not configured" >&2; exit 1; }
+          [ -n "$SPARKLE_ED_PRIVATE_KEY" ] || { echo "The SPARKLE_ED_PRIVATE_KEY secret is not configured" >&2; exit 1; }
+          scripts/release-macos.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: dist/macos/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download platform packages
+        uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish one release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Flow $TAG for macOS, Linux, and Windows.
+
+          - macOS: Download the ZIP, unzip it, and move Flow.app to Applications.
+          - Linux: Download the AppImage, make it executable, and run it.
+          - Windows: Run Flow-win-Setup.exe. Windows may show a SmartScreen notice because the installer is not yet signed.
+
+          Existing installations can update from Flow's Check for Updates command.
+          EOF
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Flow $TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            release-assets/*

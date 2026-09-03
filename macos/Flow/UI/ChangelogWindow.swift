@@ -75,7 +75,7 @@ final class ChangelogWindowController {
             backing: .buffered,
             defer: false,
         )
-        window.title = "What's New in Flow"
+        window.title = L10n.string("What's New in Flow")
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: ChangelogView(entries: entries))
     }
@@ -118,7 +118,9 @@ struct ChangelogView: View {
             VStack(alignment: .leading, spacing: 24) {
                 ForEach(entries) { entry in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(entry.isVersionNumber ? "Version \(entry.version)" : entry.version)
+                        Text(entry.isVersionNumber
+                            ? L10n.format("Version %@", entry.version)
+                            : entry.version)
                             .font(.headline)
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(Array(entry.bullets.enumerated()), id: \.offset) { _, bullet in
