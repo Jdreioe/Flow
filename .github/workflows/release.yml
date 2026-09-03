@@ -69,8 +69,9 @@ jobs:
           version: "6.8.0"
           # Main.qml imports QtMultimedia for cloud-voice playback; without
           # this module the Qt plugin cannot bundle it and the AppImage's
-          # QML fails to load.
-          modules: qtmultimedia
+          # QML fails to load. qtwayland ships the Wayland platform plugin so
+          # the AppImage runs natively instead of falling back to XWayland.
+          modules: qtmultimedia qtwayland
           cache: true
 
       - name: Build AppImage
