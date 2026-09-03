@@ -46,10 +46,16 @@ BINARY="$PROJECT_ROOT/target/release/flow-linux"
 
 APPDIR="$BUILD_DIR/AppDir"
 mkdir -p "$APPDIR/usr/bin" \
+    "$APPDIR/usr/share/applications" \
     "$APPDIR/usr/share/icons/hicolor/16x16/apps" \
     "$APPDIR/usr/share/icons/hicolor/32x32/apps" \
     "$APPDIR/usr/share/icons/hicolor/48x48/apps"
 cp "$BINARY" "$APPDIR/usr/bin/flow-linux"
+# linuxdeploy resolves the desktop file and icon from their canonical
+# locations and creates the AppRun plus the AppDir-root links itself, so
+# install them there rather than only at the AppDir root.
+cp "$PROJECT_ROOT/linux/io.github.jdreioe.flow.desktop" \
+    "$APPDIR/usr/share/applications/"
 cp "$PROJECT_ROOT/linux/io.github.jdreioe.flow.desktop" "$APPDIR/"
 cp "$PROJECT_ROOT/linux/assets/flow-48.png" "$APPDIR/io.github.jdreioe.flow.png"
 for SIZE in 16 32 48; do
@@ -84,6 +90,8 @@ export PATH="$BUILD_DIR/tools:$PATH"
     cd "$BUILD_DIR"
     "$LINUXDEPLOY" --appimage-extract-and-run \
         --appdir "$APPDIR" \
+        --desktop-file "$APPDIR/usr/share/applications/io.github.jdreioe.flow.desktop" \
+        --icon-file "$APPDIR/io.github.jdreioe.flow.png" \
         --plugin qt \
         --output appimage
 )
