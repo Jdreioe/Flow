@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Flow
+Comment=Read selected text aloud
+Exec=flow-linux
+Icon=io.github.jdreioe.flow
+Terminal=false
+Categories=Accessibility;Utility;
+StartupNotify=false
+X-GNOME-UsesNotifications=false
+
