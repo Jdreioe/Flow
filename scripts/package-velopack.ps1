@@ -17,6 +17,10 @@ Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $staging | Out-Null
 
 Copy-Item -LiteralPath $exe -Destination (Join-Path $staging 'flow-windows.exe')
+# The tray loads this PNG at runtime; the executable's embedded .ico is separate.
+$assets = Join-Path $staging 'assets'
+New-Item -ItemType Directory -Force $assets | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'windows\assets\flow-32.png') -Destination $assets
 
 $windeployqt = $null
 foreach ($candidate in @(

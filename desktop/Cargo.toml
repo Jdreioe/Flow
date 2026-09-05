@@ -1,0 +1,64 @@
+[package]
+name = "flow-desktop"
+version.workspace = true
+edition.workspace = true
+description = "Flow selected-text reader for Linux and Windows"
+license.workspace = true
+
+[[bin]]
+name = "flow-desktop"
+path = "src/main.rs"
+
+[features]
+default = ["tray"]
+tray = ["dep:ksni", "dep:tray-icon", "dep:image"]
+
+[dependencies]
+flow-core = { path = "../core" }
+iced = { version = "0.14", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+base64 = "0.22"
+directories = "6"
+keyring = "4.1.6"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "stream"] }
+rodio = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+unicode-segmentation = "1.12"
+uuid = { version = "1", features = ["serde", "v4"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", optional = true }
+ashpd = { version = "0.13.13", default-features = false, features = ["global_shortcuts", "tokio"] }
+atspi-common = "0.14.0"
+atspi-connection = { version = "0.14.0", default-features = false }
+atspi-proxies = "0.14.0"
+ssip-client-async = "0.19.0"
+wl-clipboard-rs = "0.9.3"
+x11-clipboard = "0.9.3"
+zbus = "5.19"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+tray-icon = { version = "0.24", optional = true }
+velopack = "1.2"
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Core",
+    "Media_Playback",
+    "Media_SpeechSynthesis",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+winresource = "0.1"

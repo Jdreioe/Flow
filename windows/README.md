@@ -45,8 +45,6 @@ The first build compiles the Qt bridge and can take several minutes.
   Signing is ready to enable via the `VPK_SIGNPARAMS` environment variable on
   `scripts/package-velopack.ps1`.
 
-- The tray icon currently falls back to the system default glyph; shipping a
-  Flow `.ico`/`.png` through a Qt resource file is still pending.
 - Selection capture relies on apps exposing UI Automation text patterns
   (browsers, Office, Notepad, most editors do). Legacy apps without UIA
   support report "does not expose its selected text".
